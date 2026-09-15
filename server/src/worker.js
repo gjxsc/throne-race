@@ -108,6 +108,7 @@ export class Room {
           size: [9, 11, 13, 15].includes(s.size) ? s.size : 11,
           walls: Math.min(30, Math.max(1, s.walls | 0 || 8)),
           items: [0, 3, 5, 7, 10].includes(s.items) ? s.items : 0,
+          skills: s.skills !== false,   // 技能系统：默认开，仅显式 false 关闭
         };
         this.status = 'playing';
         this.broadcast({ t: 'start', settings, seats: this.roster() });

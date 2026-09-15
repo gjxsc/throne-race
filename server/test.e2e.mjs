@@ -78,9 +78,10 @@ try {
 check('不存在的房间被拒', rejected);
 
 console.log('4) 开局（房主广播，1 人开局 + AI 补位也可以）');
-host.send({ t: 'start', settings: { sync: false, size: 9, walls: 6, items: 0 } });
+host.send({ t: 'start', settings: { sync: false, size: 9, walls: 6, items: 0, skills: true } });
 const s2 = await c2.wait((m) => m.t === 'start', 'start');
 check('客户端收到 start', s2.settings.size === 9 && s2.settings.walls === 6);
+check('settings 白名单透传 skills 开关', s2.settings.skills === true);
 check('座位表=已加入的真人（空位隐式 AI）', s2.seats.length === 3 && s2.seats[0].name === '房主');
 
 console.log('5) 房主状态广播');

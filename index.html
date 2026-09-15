@@ -25,6 +25,31 @@
   #boardBox{ position:relative; }
   canvas{ display:block; border-radius:14px; }
   #side{ width:300px; flex:0 0 300px; display:flex; flex-direction:column; gap:10px;}
+  #leftbar{ width:170px; flex:0 0 170px; display:flex; flex-direction:column; gap:10px; align-self:stretch;}
+  .logcard{ flex:1 1 auto; min-height:96px; display:flex; flex-direction:column; overflow:hidden;}
+  #logBody{ flex:1 1 auto; min-height:0; overflow-y:auto; font-size:11px; line-height:1.8; color:var(--dim); scrollbar-width:thin;}
+  #logBody::-webkit-scrollbar{ width:4px;}
+  #logBody::-webkit-scrollbar-thumb{ background:#263252; border-radius:2px;}
+  #logBody .lg{ display:flex; gap:5px; align-items:baseline;}
+  #logBody .tno{ flex:0 0 auto; font-size:9.5px; color:#4d5a78;}
+  #logBody b{ font-weight:700;}
+  .lsk{ border:1px solid #263252; border-radius:12px; padding:10px; cursor:pointer; transition:.2s; background:rgba(22,32,58,.45);}
+  .lsk .ico{ font-size:26px; line-height:1;}
+  .lsk .nm{ font-size:13px; font-weight:700; margin:7px 0 4px; color:var(--text);}
+  .lsk .ds{ font-size:11px; color:var(--dim); line-height:1.55;}
+  .lsk:hover{ background:#1c2949; border-color:#33447a;}
+  .lsk.dis{ opacity:.42; cursor:default; filter:grayscale(.75);}
+  .lsk.dis:hover{ background:rgba(22,32,58,.45); border-color:#263252;}
+  .lsk.arm{ border-color:#4a5f97; box-shadow:0 0 10px rgba(80,120,220,.45);}
+  .lsk.armed{ border-color:#c9a227; box-shadow:0 0 10px rgba(230,200,90,.4); background:rgba(96,76,22,.28); cursor:pointer;}
+  .lsk.armed:hover{ border-color:#e6c94f;}
+  .lskbtns{ display:flex; gap:6px; margin-top:9px;}
+  .lskbtns button{ flex:1; padding:5px 4px; font-size:12px; border-radius:8px;}
+  .lslotwrap{ display:flex; gap:8px;}
+  .lslot{ flex:1; min-height:48px; border:1.5px dashed #2c3a63; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:22px; transition:.2s;}
+  .lslot.mine{ border-style:solid; cursor:pointer;}
+  .lslot.mine:hover{ background:#1c2949;}
+  .lslot.on{ background:#263250; border-color:#4a5f97; box-shadow:0 0 6px rgba(80,120,220,.5);}
   .card{ background:rgba(13,19,34,.82); border:1px solid #1b2438; border-radius:14px; padding:12px;}
   .card h3{ font-size:12px; color:var(--dim); letter-spacing:2px; margin-bottom:8px; font-weight:600;}
   .prow{ display:flex; align-items:center; gap:8px 5px; padding:6px 8px; border-radius:10px; margin-bottom:6px; transition:.25s; border:1px solid transparent;}
@@ -99,6 +124,9 @@
     #wrap{ flex-direction:column; align-items:center;}
     #side{ width:100%; max-width:520px; flex:none; flex-direction:row; flex-wrap:wrap;}
     #side .card{ flex:1 1 45%;}
+    #leftbar{ width:100%; max-width:520px; flex:none; flex-direction:row; flex-wrap:wrap; align-self:auto;}
+    #leftbar .card{ flex:1 1 45%;}
+    #leftbar .logcard{ flex:1 1 100%; max-height:150px;}
   }
 </style>
 </head>
@@ -109,6 +137,11 @@
 </header>
 
 <div id="wrap">
+  <div id="leftbar">
+    <div class="card"><h3>技能</h3><div id="skBarBody"></div></div>
+    <div class="card"><h3>道具箱</h3><div id="invBarBody"></div></div>
+    <div class="card logcard"><h3>动态</h3><div id="logBody"></div></div>
+  </div>
   <div id="boardBox"><canvas id="cv"></canvas></div>
   <div id="side">
     <div class="card">
@@ -210,6 +243,15 @@ const SKILLS = [
   {id:'sprint',    icon:'🏃', name:'疾跑',     target:null,   desc:'本回合可行动 2 次（同步模式 +2 操作点）'},
 ];
 const INV_CAP = 2;   // 道具箱容量
+/* ---- 道具表（宝箱随机开出；stun 开箱即触发不进箱） ---- */
+const ITEMS = {
+  wall:     {icon:'🧱', name:'城墙',       desc:'点击立即 +1 堵墙'},
+  hammer:   {icon:'🔨', name:'碎墙锤',     desc:'点击后选一堵墙击碎'},
+  restore:  {icon:'🔋', name:'技能恢复卡', desc:'点击恢复技能使用次数 1 次'},
+  trap:     {icon:'🪤', name:'陷阱卡',     desc:'点击空格埋入陷阱（仅自己可见），踩中者掉回出生点'},
+  confusion:{icon:'🌀', name:'混乱卡',     desc:'点击一名对手：其下一步方向上下左右颠倒'},
+  stun:     {icon:'💫', name:'眩晕',       desc:'开箱即触发：拾取者暂停 1 回合'},
+};
 
 /* ================= 状态 ================= */
 let wallsH = new Set();   // "x,y"：横墙，挡住 (x,y-1)/(x,y) 与 (x+1,y-1)/(x+1,y) 的竖向通行
@@ -221,9 +263,13 @@ let mode = 'pve', wallStock = 8, muted = false, fastAI = false;
 let itemsOn = false, itemInterval = 5, itemClock = 0;   // 道具系统：定时发到玩家道具箱
 let skillsOn = true;                            // 技能系统开关
 let pendingSkill = null, pendingItem = null;    // 目标选择中：待确认的技能/道具
+let skArming = null;                            // 左栏技能卡二次确认中：确认发起者的颜色
 let draftTimer = 0, netSkillPicked = false;     // 联机选技：30s 代选定时器 / 本端已提交标记
 let draft = null;                               // 开局选技 {offers:{color:[3个id]}, picked:{color:id}}
 let confetti = [], fx = [], toastMsg = null;
+let logLines = [];                                 // 操作日志：{t:回合数, text, color}
+let boxes = [];                                    // 棋盘宝箱：{x, y, i:道具kind}
+let traps = [];                                    // 棋盘陷阱：{x, y, o:埋设者color}（仅埋设方可见）
 let aiTimer = null;
 const SYNC_CD = 500;      // 同步模式：动作间隔（毫秒）
 const SYNC_APMAX = 3;     // 同步模式：操作点上限
@@ -385,7 +431,9 @@ function newGame(){
   });
   turnIdx = Math.floor(rnd()*4);
   winner = null; busy = false; turnCount = 0; passStreak = 0;
-  itemClock = 0;
+  itemClock = 0; boxes = []; traps = [];
+  logLines = [];
+  logAppend('🏁 新对局开始，抢座大战一触即发', null);
   confetti = []; fx = []; toastMsg = null; pendingWall = null;
   document.getElementById('overlay').classList.remove('show');
   layout();
@@ -414,6 +462,8 @@ function pickSkill(p, id, silent){
   if (!p || p.skill || !p.skillOffer.includes(id)) return;
   p.skill=id; p.skillOffer=[];
   if (draft) draft.picked[p.color]=id;
+  const s0=SKILLS.find(x=>x.id===id);
+  if (s0) logPush('选定技能 '+s0.icon+' '+s0.name, p.color);
   renderPanel();
   if (!silent) sPick();
 }
@@ -497,13 +547,23 @@ function refreshNetDraft(){                      // 远端收到快照：同步�
 /* ================= 行动执行 ================= */
 function spendAP(p){ p.ap = Math.max(0, p.ap-1); p.lastAct = performance.now(); }
 function doMove(p, cell){
+  if (p.confused){                        // 🌀 混乱：目标格以棋子为中心镜像（上下左右颠倒）
+    p.confused = false;
+    const mx = 2*p.cell.x - cell.x, my = 2*p.cell.y - cell.y;
+    if (legalMoves(p).some(c=>c.x===mx&&c.y===my)){
+      cell = {x:mx, y:my};
+      logPush('🌀 混乱生效：方向被颠倒！', p.color);
+    }                                     // 镜像格不可走：仍按原方向走（混乱落空），避免卡死
+  }
   const jump = Math.abs(p.cell.x-cell.x)+Math.abs(p.cell.y-cell.y) > 1;
   p.tween = {fx:p.cell.x, fy:p.cell.y, t0:performance.now()};
   p.cell = {x:cell.x, y:cell.y};
   passStreak = 0; turnCount++;
   netEv({type:'move', color:p.color, jump});
+  logPush(jump?'跳过一个棋子 →('+cell.x+','+cell.y+')':'走一步 →('+cell.x+','+cell.y+')', p.color);
   jump ? sJump() : sMove();
   if (cell.x===THRONE.x && cell.y===THRONE.y){ endGame(p); return; }
+  afterStep(p, cell);                    // 落格结算：陷阱 → 宝箱（传送类技能不经过这里，天然不触发）
   if (isSyncMode()){ spendAP(p); renderPanel(); return; }
   if (p.extraActs>0){ p.extraActs--; toast('💨 疾跑：可再行动一次'); renderPanel(); scheduleAI(); return; }
   nextTurn();
@@ -520,6 +580,7 @@ function useHammer(p, kind, x, y){       // 消耗道具箱里的 🔨 并击碎
   const i = p.inv.indexOf('hammer');
   if (i<0) return false;
   p.inv.splice(i,1);
+  logPush('用 🔨 砸碎一堵墙', p.color);
   execSmashWall(p, kind, x, y);
   return true;
 }
@@ -614,6 +675,7 @@ function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=�
   }
   if (!done) return false;
   p.skillUsed = true;
+  logPush('释放技能 '+sk.icon+' '+sk.name, p.color);
   renderPanel();
   return true;
 }
@@ -624,6 +686,7 @@ function doWall(p, kind, x, y){
   passStreak = 0; turnCount++;
   sWall();
   netEv({type:'wall', color:p.color, kind, x, y});
+  logPush('放了一堵墙', p.color);
   fx.push({type:'wallpop', kind, x, y, t0:performance.now()});
   if (isSyncMode()){ spendAP(p); renderPanel(); return; }
   if (p.extraActs>0){ p.extraActs--; toast('💨 疾跑：可再行动一次'); renderPanel(); scheduleAI(); return; }
@@ -636,9 +699,12 @@ function nextTurn(){
   let guard = players.length*2;            // 防多人同时被定身导致死循环
   while (guard-- > 0 && !winner){
     const f = cur();
-    if (f.frozenTurns>0 && !f.left){       // ❄️ 定身：跳过该回合
+    if (f.frozenTurns>0 && !f.left){       // ❄️ 定身 / 💫 眩晕：跳过该回合
       f.frozenTurns--;
-      toast('❄️ '+COLORS[f.color].name+' 被定身，跳过回合');
+      const st = f.stunTag;
+      if (f.frozenTurns<=0) f.stunTag = false;
+      toast((st?'💫 ':'❄️ ')+COLORS[f.color].name+(st?' 眩晕中，跳过回合':' 被定身，跳过回合'));
+      logPush(st?'💫 眩晕中，跳过回合':'❄️ 被定身，跳过回合', f.color);
       netEv({type:'pass', color:f.color});
       passStreak++;
       turnIdx = (turnIdx+1)%players.length;
@@ -655,6 +721,7 @@ function autoPassIfNeeded(){
   const p = cur();
   if (!hasAnyAction(p)){
     toast(COLORS[p.color].name+' 无路可走，跳过');
+    logPush('无路可走，跳过回合', p.color);
     netEv({type:'pass', color:p.color});
     passStreak++;
     if (passStreak >= players.length*2){ endDraw(); return; }
@@ -666,6 +733,7 @@ function autoPassIfNeeded(){
 function endDraw(){
   winner = 'draw'; busy = true;
   netEv({type:'draw'});
+  logPush('🤝 无人能抵达王座，平局', null);
   const ov=document.getElementById('overlay'), pn=document.getElementById('ovPanel');
   const btns = isOnline()
     ? `<button class="primary" id="btnAgain">${netWatch?'立即下一局':'再来一局'}</button><button id="btnNetExit">离开房间</button>`
@@ -684,6 +752,7 @@ function endDraw(){
 function endGame(p){
   winner = p; busy = true;
   netEv({type:'win', color:p.color});
+  logPush('👑 踏上王座，获得胜利！', p.color);
   sWin(); spawnConfetti();
   renderPanel();
   const ov=document.getElementById('overlay'), pn=document.getElementById('ovPanel');
@@ -734,6 +803,7 @@ function aiTurn(){
     if (sm){ p.inv.splice(hammerIdx,1); execSmashWall(p, sm[0], sm[1], sm[2]); }
   }
   aiUseSkill(p);                                // 技能：免费即时，择机自动放
+  aiUseItems(p);                                // 道具：免费即时，择机自动用
   if (winner) return;
   if (myD <= 1){
     const ms = legalMoves(p);
@@ -792,7 +862,28 @@ function bestToward(p, ms){
   const {dist}=bfsFromThrone(wallsH,wallsV);
   let best=ms[0], bd=1e9;
   for(const c of ms){ const d=dist[c.y*N+c.x]; if(d>=0&&d<bd){bd=d;best=c;} }
+  for(const c of ms){ if (boxAt(c.x,c.y) && dist[c.y*N+c.x]===bd) return c; }   // 🎁 同距不绕路：顺路拾箱
   return best;
+}
+function aiUseItems(p){                      // 免费道具：AI 择机自动用（函数内 logPush/netEv 自带联机同步）
+  const iR = p.inv.indexOf('restore');
+  if (iR>=0 && skillsOn && p.skill && p.skillUsed){    // 🔋 技能用过才恢复
+    p.inv.splice(iR,1); p.skillUsed=false;
+    sPick(); renderPanel(); logPush('使用 🔋 技能恢复卡，技能已刷新', p.color);
+    return true;
+  }
+  const dists = allDists();
+  const lead = players.filter(q=>q!==p && !q.left).sort((a,b)=>dists[a.color]-dists[b.color])[0];
+  if (!lead) return false;
+  if (p.inv.indexOf('confusion')>=0 && dists[lead.color]<=6){   // 🌀 混乱领先者
+    if (useConfusionItem(p, lead)) return true;
+  }
+  if (p.inv.indexOf('trap')>=0 && dists[lead.color]<=5){        // 🪤 埋在领先者下一步
+    const {dist}=bfsFromThrone(wallsH,wallsV);
+    const cands = legalMoves(lead).sort((a,b)=>dist[a.y*N+a.x]-dist[b.y*N+b.x]);
+    for(const c of cands){ if (useTrapItem(p, c.x, c.y)) return true; }
+  }
+  return false;
 }
 function aiAct(p, kind, arg){
   busy = true;
@@ -842,6 +933,7 @@ function syncAIDecide(p){
     if (sm){ p.inv.splice(hammerIdx,1); execSmashWall(p, sm[0], sm[1], sm[2]); return true; }
   }
   if (aiUseSkill(p)) return true;               // 技能：免费即时，择机自动放
+  if (aiUseItems(p)) return true;               // 道具：免费即时，择机自动用
   if (winner) return false;
   let bestWall=null, bestScore=1.6 + rnd()*0.8;
   if (p.walls>0){
@@ -871,15 +963,95 @@ function syncAIDecide(p){
   return false;
 }
 
-function grantItems(){                  // 每 itemInterval 秒：给每个没满的玩家发 1 个随机道具
-  let granted = false;
-  for(const p of players){
-    if (p.left || p.inv.length>=INV_CAP) continue;
-    p.inv.push(rnd()<0.5?'hammer':'wall');
-    netEv({type:'grant', color:p.color});
-    granted = true;
+function boxAt(x,y){ return boxes.find(b=>b.x===x&&b.y===y) || null; }
+function trapAt(x,y){ return traps.find(t=>t.x===x&&t.y===y) || null; }
+function spawnBox(){                      // 每 itemInterval 秒：棋盘随机刷一个宝箱（上限 4，开出随机道具）
+  if (boxes.length >= 4) return;
+  const c = randCell((x,y)=>!boxAt(x,y) && !trapAt(x,y));
+  if (!c) return;
+  const pool = [];
+  const put = (k,w)=>{ if (ITEMS[k]) for(let i=0;i<w;i++) pool.push(k); };
+  put('wall',3); put('hammer',3);
+  if (skillsOn) put('restore',2);
+  put('trap',2); put('confusion',2); put('stun',1);
+  const kind = pool[Math.floor(rnd()*pool.length)];
+  boxes.push({x:c.x, y:c.y, i:kind});
+  fx.push({type:'boxin', x:c.x, y:c.y, t0:performance.now()});
+  netEv({type:'boxspawn', x:c.x, y:c.y});
+}
+function afterStep(p, cell){              // 每次走到新格子（doMove 王座判定后）：先判陷阱，再拾宝箱
+  if (triggerTrap(p, cell)) return;
+  pickupAt(p, cell);
+}
+function pickupAt(p, cell){               // 拾取脚下宝箱：道具箱满则留在原地
+  const b = boxAt(cell.x, cell.y);
+  if (!b) return;
+  if (p.inv.length >= INV_CAP){
+    if (p===localFreeActor()) toast('道具箱已满，宝箱留在原地');
+    logPush('走到宝箱，但道具箱已满 🎁 留在原地', p.color);
+    return;
   }
-  if (granted){ sPick(); renderPanel(); }
+  boxes.splice(boxes.indexOf(b), 1);
+  p.inv.push(b.i);
+  sPick();
+  fx.push({type:'openbox', x:b.x, y:b.y, i:b.i, t0:performance.now()});
+  netEv({type:'boxopen', x:b.x, y:b.y, i:b.i});
+  if (b.i==='stun'){
+    applyStun(p);
+    logPush('💫 打开宝箱中了眩晕！暂停 1 回合', p.color);
+  }else{
+    logPush('🎁 打开宝箱获得 '+ITEMS[b.i].icon+' '+ITEMS[b.i].name, p.color);
+  }
+  renderPanel();
+}
+function applyStun(p){                    // 眩晕：暂停 1 回合（同步模式冻结 2.5 秒）
+  p.stunTag = true;
+  if (isSyncMode()) p.frozenUntil = Math.max(p.frozenUntil, performance.now()+2500);
+  else p.frozenTurns = Math.max(p.frozenTurns, 1);
+  fx.push({type:'stun', x:p.cell.x, y:p.cell.y, t0:performance.now()});
+  sBad();
+  netEv({type:'stunfx', color:p.color});
+}
+function canSeeTrap(t){                   // 陷阱仅埋设方可见（联机看自己；本地看人类方）
+  if (isOnline()) return t.o===myColor;
+  const o = players.find(p=>p.color===t.o);
+  return !!(o && o.human);
+}
+function triggerTrap(p, cell){            // 踩中陷阱：塌陷特效 + 掉回出生点，陷阱消耗
+  const t = trapAt(cell.x, cell.y);
+  if (!t || t.o===p.color) return false;  // 埋设方免疫自己的陷阱
+  traps.splice(traps.indexOf(t), 1);
+  fx.push({type:'trapgo', x:cell.x, y:cell.y, t0:performance.now()});
+  sSmash();
+  netEv({type:'trapgo', x:cell.x, y:cell.y});
+  teleport(p, {x:SPAWN[p.color].x, y:SPAWN[p.color].y});
+  toast('💥 '+COLORS[p.color].name+' 踩中陷阱，掉回出生点！');
+  logPush('💥 踩中 🪤 陷阱，掉回出生点', p.color);
+  renderPanel();
+  return true;
+}
+function useTrapItem(p, x, y){            // 埋陷阱：空格、非王座、不与宝箱/已有陷阱重叠
+  const i = p.inv.indexOf('trap');
+  if (i<0) return false;
+  if (!inB(x,y) || pawnAt(x,y) || (x===THRONE.x&&y===THRONE.y) || trapAt(x,y) || boxAt(x,y)) return false;
+  p.inv.splice(i,1);
+  traps.push({x, y, o:p.color});
+  sPick(); renderPanel();
+  logPush('🪤 埋入了一个陷阱', p.color);
+  logPush('🪤 陷阱埋在 ('+x+','+y+')', p.color, true);   // 坐标仅自己可见
+  return true;
+}
+function useConfusionItem(p, v){          // 混乱：目标对手下一步方向颠倒
+  const i = p.inv.indexOf('confusion');
+  if (i<0 || !v || v===p || v.left) return false;
+  p.inv.splice(i,1);
+  v.confused = true;
+  sPick(); renderPanel();
+  fx.push({type:'stun', x:v.cell.x, y:v.cell.y, t0:performance.now(), icon:'🌀'});
+  netEv({type:'confusefx', color:v.color});
+  toast('🌀 '+COLORS[v.color].name+' 被混乱！下一步方向颠倒');
+  logPush('🌀 对 '+COLORS[v.color].name+' 使用混乱卡', p.color);
+  return true;
 }
 function bestSmash(p){
   let best=null, bestGain=0;
@@ -970,6 +1142,31 @@ cv.addEventListener('click', e=>{
       else { busy=true; setTimeout(()=>{ busy=false; }, 2500); netSend({t:'act', a:intent}); }
     }else{
       if (!useHammer(pa, sm[0], sm[1], sm[2])) toast('你没有锤子');
+    }
+    return;
+  }
+  // 目标选择模式：🪤 点空格埋陷阱 / 🌀 点对手施放混乱，点空处取消
+  if (pendingItem==='trap' || pendingItem==='confusion'){
+    const pa = localFreeActor();
+    if (!pa) return;
+    const kind = pendingItem;
+    pendingItem = null; renderPanel();
+    const r0=cv.getBoundingClientRect();
+    const tx=Math.round((e.clientX-r0.left-PAD)/CELL-0.5), ty=Math.round((e.clientY-r0.top-PAD)/CELL-0.5);
+    if (!inB(tx,ty)){ toast('已取消'); return; }
+    let intent;
+    if (kind==='trap') intent={type:'itemuse', kind:'trap', x:tx, y:ty};
+    else{
+      const v=pawnAt(tx,ty);
+      if (!v || v===pa || v.left){ toast('要点一名对手'); return; }
+      intent={type:'itemuse', kind:'confusion', t:{color:v.color}};
+    }
+    if (isOnline()){
+      if (hostSim()) hostApplyAction(pa, intent);
+      else { busy=true; setTimeout(()=>{ busy=false; }, 2500); netSend({t:'act', a:intent}); }
+    }else{
+      const ok = kind==='trap' ? useTrapItem(pa, tx, ty) : useConfusionItem(pa, pawnAt(tx,ty));
+      if (!ok) toast(kind==='trap' ? '那里埋不了陷阱' : '目标无效');
     }
     return;
   }
@@ -1121,7 +1318,21 @@ function hostApplyAction(p, a){
     const i = p.inv.indexOf('wall');
     if (i<0) return reject('没有 🧱 道具');
     p.inv.splice(i,1); p.walls++;
+    logPush('使用 🧱 +1 堵墙', p.color);
     sPick(); renderPanel();
+  }else if (a.type==='itemuse' && a.kind==='restore'){
+    const i = p.inv.indexOf('restore');
+    if (i<0) return reject('没有 🔋 恢复卡');
+    if (!skillsOn || !p.skill) return reject('本局没有技能，恢复卡用不了');
+    if (!p.skillUsed) return reject('技能还没用过，无需恢复');
+    p.inv.splice(i,1); p.skillUsed=false;
+    logPush('使用 🔋 技能恢复卡，技能已刷新', p.color);
+    sPick(); renderPanel();
+  }else if (a.type==='itemuse' && a.kind==='trap'){
+    if (!useTrapItem(p, a.x, a.y)) return reject('那里埋不了陷阱');
+  }else if (a.type==='itemuse' && a.kind==='confusion'){
+    const v = players.find(q=>q.color===(a.t||{}).color);
+    if (!useConfusionItem(p, v)) return reject('目标无效');
   }else if (a.type==='skilluse'){
     const sk = SKILLS.find(s=>s.id===a.id);
     if (!skillsOn) return reject('本局未开启技能');
@@ -1210,7 +1421,7 @@ function draw(now){
   }
   if (itemsOn && !winner && hostSim()){
     itemClock += dt;
-    if (itemClock >= itemInterval){ itemClock = 0; grantItems(); }
+    if (itemClock >= itemInterval){ itemClock = 0; spawnBox(); }
   }
   ctx.clearRect(0,0,boardPx,boardPx);
 
@@ -1341,6 +1552,26 @@ function draw(now){
     }
   }
 
+  // 宝箱（悬浮 + 呼吸辉光）
+  for(const b of boxes){
+    const bob = 2.5*Math.sin(now/300 + b.x*1.3 + b.y*0.9);
+    ctx.save();
+    ctx.shadowColor='rgba(253,202,0,.55)'; ctx.shadowBlur=10+4*Math.sin(now/200+b.x);
+    ctx.font=(CELL*0.52)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('🎁', px(b.x)+CELL/2, px(b.y)+CELL/2+2+bob);
+    ctx.restore();
+  }
+  // 自己埋的陷阱（仅埋设方可见）
+  for(const t of traps){
+    if (!canSeeTrap(t)) continue;
+    const bob = 1.5*Math.sin(now/260 + t.x + t.y);
+    ctx.save();
+    ctx.globalAlpha=0.75+0.25*Math.sin(now/300);
+    ctx.font=(CELL*0.42)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('🪤', px(t.x)+CELL/2, px(t.y)+CELL/2+2+bob);
+    ctx.restore();
+  }
+
   // 棋子
   for(const p of players){
     let X=px(p.cell.x)+CELL/2, Y=px(p.cell.y)+CELL/2;
@@ -1381,9 +1612,16 @@ function draw(now){
     ctx.restore();
     ctx.fillStyle='rgba(255,255,255,.35)';
     ctx.beginPath(); ctx.arc(X-CELL*0.09,Y-CELL*0.11,CELL*0.08,0,7); ctx.fill();
-    if (isSyncMode()? now<p.frozenUntil : p.frozenTurns>0){   // ❄️ 定身指示
+    if (isSyncMode()? now<p.frozenUntil : p.frozenTurns>0){   // ❄️ 定身 / 💫 眩晕指示
       ctx.font=(CELL*0.5)+'px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-      ctx.fillText('❄️', X+CELL*0.28, Y-CELL*0.28);
+      ctx.fillText(p.stunTag?'💫':'❄️', X+CELL*0.28, Y-CELL*0.28);
+    }
+    if (p.confused){                        // 🌀 混乱待发：头顶摇晃图标
+      ctx.save();
+      ctx.translate(X-CELL*0.02, Y-CELL*0.52); ctx.rotate(Math.sin(now/180)*0.35);
+      ctx.font=(CELL*0.42)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('🌀', 0, 0);
+      ctx.restore();
     }
     if (isSyncMode()){                     // 操作点气泡：3格，亮=可用；攒点中变金色
       for(let i=0;i<SYNC_APMAX;i++){
@@ -1396,10 +1634,65 @@ function draw(now){
     }
   }
 
-  // 特效
-  fx = fx.filter(f=>now-f.t0 < 500);
+  // 特效（openbox 开箱动画较长，单独放宽）
+  fx = fx.filter(f=>now-f.t0 < (f.type==='openbox'?1200:((f.type==='trapgo'||f.type==='stun')?900:500)));
   for(const f of fx){
-    if (f.type==='wallpop'){
+    if (f.type==='boxin'){                // 🎁 宝箱刷新：金色闪现
+      const t=(now-f.t0)/450;
+      if (t<=1){
+        ctx.save(); ctx.globalAlpha=(1-t)*0.9;
+        ctx.strokeStyle='#fdca00'; ctx.lineWidth=2.5;
+        const X=px(f.x)+CELL/2, Y=px(f.y)+CELL/2;
+        ctx.beginPath(); ctx.arc(X, Y, CELL*(0.15+0.65*t), 0, 7); ctx.stroke();
+        ctx.font=(CELL*0.5)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.globalAlpha=1-t; ctx.fillText('✨', X, Y);
+        ctx.restore();
+      }
+    }else if (f.type==='openbox'){        // 🎁 开箱：抖动 → 箱盖上弹 → 道具图标放大浮现
+      const t=(now-f.t0)/1200;
+      const X=px(f.x)+CELL/2, Y=px(f.y)+CELL/2;
+      if (t<0.35){
+        ctx.font=(CELL*0.52)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText('🎁', X+Math.sin(t/0.35*Math.PI*6)*CELL*0.09, Y+2);
+      }else{
+        const u=(t-0.35)/0.65;
+        ctx.save();
+        ctx.globalAlpha=(1-u)*0.85;
+        ctx.font=(CELL*0.5)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText('📦', X, Y-CELL*0.55*u-2);
+        ctx.globalAlpha=Math.min(1,u*3);
+        ctx.font=(CELL*(0.45+0.4*Math.sin(Math.min(1,u)*Math.PI)))+'px serif';
+        ctx.fillText((ITEMS[f.i]||{icon:'🎁'}).icon, X, Y+2-CELL*0.12*u);
+        ctx.strokeStyle='#fdca00'; ctx.lineWidth=2.5; ctx.globalAlpha=(1-u)*0.8;
+        ctx.beginPath(); ctx.arc(X, Y, CELL*(0.25+0.75*u), 0, 7); ctx.stroke();
+        ctx.restore();
+      }
+    }else if (f.type==='trapgo'){         // 🕳️ 陷阱塌陷：黑洞扩散 + 碎裂
+      const t=(now-f.t0)/900;
+      if (t<=1){
+        const X=px(f.x)+CELL/2, Y=px(f.y)+CELL/2;
+        ctx.save();
+        ctx.globalAlpha=(1-t)*0.95;
+        ctx.fillStyle='#000';
+        ctx.beginPath(); ctx.arc(X, Y, CELL*(0.12+0.42*t), 0, 7); ctx.fill();
+        ctx.strokeStyle='#8a6bff'; ctx.lineWidth=3;
+        ctx.beginPath(); ctx.arc(X, Y, CELL*(0.2+0.62*t), 0, 7); ctx.stroke();
+        ctx.font=(CELL*0.5)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.globalAlpha=1-t; ctx.fillText('💥', X, Y-CELL*0.3*t);
+        ctx.restore();
+      }
+    }else if (f.type==='stun'){             // 💫 眩晕 / 🌀 混乱：图标旋转上浮
+      const t=(now-f.t0)/900;
+      if (t<=1){
+        ctx.save();
+        ctx.globalAlpha=t<0.7?1:(1-t)/0.3;
+        ctx.translate(px(f.x)+CELL/2, px(f.y)+CELL/2-CELL*0.6*t);
+        ctx.rotate(t*Math.PI*2);
+        ctx.font=(CELL*0.55)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText(f.icon||'💫', 0, 0);
+        ctx.restore();
+      }
+    }else if (f.type==='wallpop'){
       const t=(now-f.t0)/300, e=1-Math.pow(1-Math.min(1,t),2);
       ctx.save(); ctx.globalAlpha=(1-t)*0.7;
       ctx.strokeStyle='#fff'; ctx.lineWidth=WT+6*e;
@@ -1513,8 +1806,10 @@ function renderPanel(){
     const itm=row.querySelector('.itm');
     if (itm){
       const mine = p===localFreeActor() && !winner;
-      itm.innerHTML = p.inv.map((k,i)=>
-        `<span class="islot${mine?' mine':''}${pendingItem==='hammer'&&k==='hammer'?' on':''}" data-i="${i}">${k==='hammer'?'🔨':'🧱'}</span>`).join('');
+      itm.innerHTML = p.inv.map((k,i)=>{
+        const it=ITEMS[k]||{icon:'🎁',name:'',desc:''};
+        return `<span class="islot${mine?' mine':''}${pendingItem===k?' on':''}" data-i="${i}" title="${it.name}：${it.desc}">${it.icon}</span>`;
+      }).join('');
       if (mine) for(const s of itm.querySelectorAll('.islot'))
         s.onclick = ()=>clickInvSlot(p, +s.dataset.i);
     }
@@ -1531,8 +1826,73 @@ function renderPanel(){
     else if (dists && dists[p.color]>=0) steps.textContent='距王座 '+dists[p.color];
     else steps.textContent='—';
   }
+  renderLeftbar();
 }
-function clickInvSlot(p, i){          // 点击道具箱：🧱 立即 +1 墙；🔨 进入选墙模式
+/* ---- 操作日志（左侧底部"动态"面板；联机时房主权威，随事件广播） ---- */
+function logPush(text, color, priv){   // priv=true：仅 color 一方可见（如陷阱埋设坐标）
+  if (isOnline()){
+    if (!hostSim()) return;            // 客户端不产日志，只经 applyEvent 收
+    netEv({type:'log', text, color: color||null, to: priv&&color ? color : null});
+    if (priv && color !== myColor) return;   // 他人的私密日志：房主也不显示
+  }
+  logAppend(text, color);
+}
+function logAppend(text, color){
+  logLines.push({t:turnCount, text, color: color||null});
+  if (logLines.length > 90) logLines.shift();
+  logRender();
+}
+function logRender(){
+  const el=document.getElementById('logBody'); if(!el) return;
+  el.innerHTML = logLines.map(L=>
+    `<div class="lg"><span class="tno">T${L.t}</span><span>${L.color?`<b style="color:${COLORS[L.color].main}">${COLORS[L.color].name}</b> `:''}${L.text}</span></div>`).join('');
+  el.scrollTop = el.scrollHeight;
+}
+function renderLeftbar(){                // 棋盘左侧技能卡 + 道具箱
+  const skBody=document.getElementById('skBarBody'); if(!skBody) return;
+  const invBody=document.getElementById('invBarBody');
+  const me=localFreeActor();
+  if (!me || winner || (pendingSkill&&pendingSkill!==(me.skill||''))) skArming=null;
+  const sk=(me&&me.skill)?SKILLS.find(s=>s.id===me.skill):null;
+  const used=me&&me.skillUsed;
+  const usable=!!(sk&&!used&&!winner);
+  const armed=!!(sk&&pendingSkill===sk.id);
+  const confirming=usable&&!armed&&skArming===me.color;
+  if (!sk){
+    skBody.innerHTML=`<div class="lsk dis"><div class="ico">🃏</div><div class="nm">${me?'本局未选技能':'等待你的回合'}</div><div class="ds">${me?'本局没有可选技能，或技能已关闭':'轮到你时技能卡会在此点亮'}</div></div>`;
+  }else{
+    const cls='lsk'+(armed?' armed':(confirming?' arm':(used||!usable?' dis':'')));
+    skBody.innerHTML=`
+      <div class="${cls}" id="lskCard">
+        <div class="ico">${sk.icon}</div>
+        <div class="nm">${sk.name}${used?' · 已用':''}</div>
+        <div class="ds">${used?'本局技能已释放':sk.desc}</div>
+        ${armed?`<div class="ds" style="color:#e6c94f;margin-top:4px">已瞄准：点击棋盘上的目标；再点本卡可取消</div>`:''}
+        ${confirming?`<div class="lskbtns"><button class="primary" id="lskGo">使 用</button><button id="lskNo">取 消</button></div>`:''}
+      </div>`;
+    const card=document.getElementById('lskCard');
+    if (armed) card.onclick=()=>{ skArming=null; clickSkillSlot(me); };
+    else if (usable&&!confirming) card.onclick=()=>{ skArming=me.color; renderLeftbar(); };
+    else card.onclick=null;
+    const go=document.getElementById('lskGo');
+    if (go) go.onclick=e=>{ e.stopPropagation(); skArming=null; clickSkillSlot(me); };
+    const no=document.getElementById('lskNo');
+    if (no) no.onclick=e=>{ e.stopPropagation(); skArming=null; renderLeftbar(); };
+  }
+  if (invBody){
+    const mine=!!me&&!winner;
+    let cells='';
+    for(let i=0;i<INV_CAP;i++){
+      const k=me?me.inv[i]:null;
+      const it=k?(ITEMS[k]||{icon:'🎁'}):null;
+      cells+=`<div class="lslot${k&&mine?' mine':''}${pendingItem===k?' on':''}" data-i="${i}" title="${it?(it.icon+' '+it.name+'：'+it.desc):'空'}">${it?it.icon:''}</div>`;
+    }
+    invBody.innerHTML=`<div class="lslotwrap">${cells}</div>`;
+    if (mine) for(const s of invBody.querySelectorAll('.lslot'))
+      if (me.inv[+s.dataset.i]) s.onclick=()=>{ skArming=null; clickInvSlot(me, +s.dataset.i); };
+  }
+}
+function clickInvSlot(p, i){          // 点击道具箱：🧱 +1 墙；🔨 选墙砸碎；🔋 恢复技能；🪤 选格埋雷；🌀 选对手混乱
   if (winner) return;
   if (!isSyncMode() && cur()!==p){ toast('还没轮到你'); return; }
   const kind = p.inv[i]; if (!kind) return;
@@ -1542,8 +1902,26 @@ function clickInvSlot(p, i){          // 点击道具箱：🧱 立即 +1 墙；
       else { busy=true; setTimeout(()=>{busy=false;},2500); netSend({t:'act', a:{type:'itemuse', kind:'wall'}}); }
     }else{
       p.inv.splice(i,1); p.walls++; sPick(); renderPanel();
+      logPush('使用 🧱 +1 堵墙', p.color);
       toast(COLORS[p.color].name+' 使用 🧱：+1 堵墙');
     }
+  }else if (kind==='restore'){
+    if (!skillsOn || !p.skill){ toast('本局没有技能，恢复卡用不了'); return; }
+    if (!p.skillUsed){ toast('技能还没用过，无需恢复'); return; }
+    if (isOnline()){
+      if (hostSim()) hostApplyAction(p, {type:'itemuse', kind:'restore'});
+      else { busy=true; setTimeout(()=>{busy=false;},2500); netSend({t:'act', a:{type:'itemuse', kind:'restore'}}); }
+    }else{
+      p.inv.splice(i,1); p.skillUsed=false; sPick(); renderPanel();
+      logPush('使用 🔋 技能恢复卡，技能已刷新', p.color);
+      toast('🔋 技能使用次数已恢复');
+    }
+  }else if (kind==='trap' || kind==='confusion'){
+    if (pendingItem===kind){ pendingItem=null; renderPanel(); return; }   // 再点一次取消
+    pendingItem=kind;
+    pendingSkill=null;                    // 与技能待选互斥
+    renderPanel();
+    toast(kind==='trap' ? '🪤 点击一个空格埋入陷阱（仅自己可见）' : '🌀 点击一名对手：混乱其下一步方向');
   }else{
     if (pendingItem==='hammer'){ pendingItem=null; renderPanel(); return; }   // 再点一次取消
     pendingItem='hammer';
@@ -1580,7 +1958,7 @@ function syncSelects(){
 }
 function refreshHint(){
   const itemLine = itemsOn
-    ? '<b>道具开启</b>：每隔几秒道具自动进入道具箱（上限2）——🧱 点击用掉 +1 堵墙；🔨 点击后选一堵墙击碎。<br>'
+    ? '<b>道具开启</b>：棋盘每隔几秒出现 🎁 宝箱，走上去拾取（道具箱上限2）——🧱 +1 堵墙；🔨 砸碎一堵墙；🔋 恢复技能；🪤 埋陷阱；🌀 混乱对手；💫 开箱即中眩晕。<br>'
     : '';
   const touchLine = touchMode ? '📱 <b>触屏放墙</b>：点格线先出预览，再点一次确认；点格子直接走子。<br>' : '';
   document.getElementById('hint').innerHTML = isSyncMode()
@@ -1623,6 +2001,8 @@ function serializeState(){
   return {
     sync: isSyncMode(), watch: netWatch, N, throne:{x:THRONE.x, y:THRONE.y},
     wallsH: [...wallsH], wallsV: [...wallsV], wallOwner,
+    boxes: boxes.map(b=>({x:b.x, y:b.y, i:b.i})),
+    traps: traps.map(t=>({x:t.x, y:t.y, o:t.o})),
     turnIdx, turnCount, passStreak,
     winner: winner==null ? null : (winner==='draw' ? 'draw' : winner.color),
     draft: draft? {offers:draft.offers, picked:draft.picked} : null,
@@ -1631,6 +2011,7 @@ function serializeState(){
       walls:p.walls, left:p.left, ai:p.ai, human:p.human,
       inv:[...p.inv], sk:p.skill, sku:p.skillUsed?1:0,
       fzt:p.frozenTurns, fzu:Math.round(p.frozenUntil), exa:p.extraActs, pt:p.paint,
+      cnf:p.confused?1:0, stn:p.stunTag?1:0,
       ap:Math.round(p.ap*100)/100,
     })),
     now: performance.now(),
@@ -1648,6 +2029,8 @@ function applySnapshot(s, ev){
   wallsH = new Set(s.wallsH);
   wallsV = new Set(s.wallsV);
   wallOwner = { ...s.wallOwner };
+  boxes = (s.boxes||[]).map(b=>({x:b.x, y:b.y, i:b.i}));
+  traps = (s.traps||[]).map(t=>({x:t.x, y:t.y, o:t.o}));
   turnIdx = s.turnIdx; turnCount = s.turnCount; passStreak = s.passStreak;
   itemClock = 0;
   draft = s.draft ? {offers:s.draft.offers, picked:s.draft.picked} : null;
@@ -1661,6 +2044,7 @@ function applySnapshot(s, ev){
       frozenTurns: sp.fzt||0,
       frozenUntil: sp.fzu ? performance.now() + Math.max(0, sp.fzu - hostNow) : 0,   // 主机时钟 → 本地时钟
       extraActs: sp.exa||0, paint: sp.pt||null,
+      confused: !!sp.cnf, stunTag: !!sp.stn,
       ap: sp.ap!=null ? sp.ap : SYNC_APMAX,
       lastAct: performance.now() - Math.max(0, hostNow - (sp.lastAct || hostNow)),  // 换算到本地时钟
       tween:null, bank:false, burstLeft:0, nextThink:0,
@@ -1681,14 +2065,19 @@ function applyEvent(e){
   if (e.to && e.to !== myColor) return;                   // 定向消息只给收件人
   const now = performance.now();
   switch(e.type){
-    case 'roundstart': toast('新对局开始！'); netSkillPicked=false; break;
+    case 'roundstart': toast('新对局开始！'); logLines = []; netSkillPicked=false; break;
     case 'move': (e.jump?sJump:sMove)(); break;
     case 'wall': sWall(); fx.push({type:'wallpop', kind:e.kind, x:e.x, y:e.y, t0:now}); break;
     case 'smash': sSmash(); fx.push({type:'smash', kind:e.kind, x:e.x, y:e.y, t0:now}); break;
     case 'skill': (e.fx==='jump'?sJump:sPick)(); break;
-    case 'grant': sPick(); break;
+    case 'boxspawn': fx.push({type:'boxin', x:e.x, y:e.y, t0:now}); break;
+    case 'boxopen': fx.push({type:'openbox', x:e.x, y:e.y, i:e.i, t0:now}); sPick(); break;
+    case 'trapgo': { fx.push({type:'trapgo', x:e.x, y:e.y, t0:now}); sSmash(); toast('💥 有人踩中陷阱，掉回出生点！'); break; }
+    case 'stunfx': { const q=players.find(x=>x.color===e.color); if (q) fx.push({type:'stun', x:q.cell.x, y:q.cell.y, t0:now}); sBad(); break; }
+    case 'confusefx': { const q=players.find(x=>x.color===e.color); if (q) fx.push({type:'stun', x:q.cell.x, y:q.cell.y, t0:now, icon:'🌀'}); break; }
     case 'pass': toast(COLORS[e.color].name+' 无路可走，跳过'); break;
     case 'reject': toast(e.text); sBad(); break;
+    case 'log': logAppend(e.text, e.color); break;
     case 'aidesk': toast((players.find(q=>q.color===e.color)||{}).name+' 掉线，AI 接管'); break;
     case 'win': sWin(); spawnConfetti(); showOnlineEnd(e.color); break;
     case 'draw': showOnlineEnd('draw'); break;
@@ -1741,7 +2130,9 @@ function newOnlineGame(seats, settings){
   });
   turnIdx = Math.floor(rnd()*4);
   winner = null; busy = false; turnCount = 0; passStreak = 0;
-  itemClock = 0;
+  itemClock = 0; boxes = []; traps = [];
+  logLines = [];
+  logPush('🏁 新对局开始，抢座大战一触即发', null);
   confetti = []; fx = []; toastMsg = null; pendingWall = null;
   document.getElementById('overlay').classList.remove('show');
   layout(); syncSelects(); buildPanel(); renderPanel(); refreshHint();
@@ -1971,7 +2362,7 @@ function showRules(first){
       <b>第一个踏上中央王座 👑 的人获胜。</b><br>
       规则保护：不许放墙把任何玩家彻底堵死——谁都得起码留一条活路。<br>
       <b>同步模式</b>：取消回合，四人同时行动。每人 3 个操作点（上限3），走子/放墙各耗 1 点，动作间隔 0.5 秒，每秒恢复 1 点。<br>
-      <b>道具模式</b>（设置里开启）：道具不再刷在地图上——每隔几秒自动进入你的道具箱（上限 2 个），点击箱中道具即可使用：🧱 +1 堵墙；🔨 击碎任意一堵墙。免费即时，不耗操作点。<br>
+      <b>道具模式</b>（设置里开启）：棋盘每隔几秒随机出现 🎁 宝箱，走上去拾取后开出随机道具（道具箱上限 2 个）：🧱 +1 堵墙；🔨 击碎任意一堵墙；🔋 恢复技能次数 1 次；🪤 埋陷阱（仅自己可见，踩中者掉回出生点）；🌀 混乱对手（其下一步方向上下左右颠倒）；💫 眩晕（开箱即触发，拾取者暂停 1 回合）。免费即时，不耗操作点。<br>
       <b>技能</b>（设置里开启）：开局每人从随机抽出的 3 个候选中选 1 个，整局限用 1 次。点击面板上的技能图标释放，免费即时（不耗回合/操作点；经典模式限自己回合内；被 ❄️ 定身时不可用）。<br>
       没有队友，没有谈判。<b>4位玩家，1位赢家，0个朋友。</b>
     </div>

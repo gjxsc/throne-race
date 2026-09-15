@@ -1683,7 +1683,9 @@ function layout(){
 window.addEventListener('resize', layout);
 
 let lastFrame = performance.now();
+let _drawErrs = 0;
 function draw(now){
+  try{
   const dt = Math.min(.05,(now-lastFrame)/1000); lastFrame = now;
   if (isSyncMode() && !winner){
     for(const p of players) p.ap = Math.min(SYNC_APMAX, p.ap + dt);   // 每秒回1点
@@ -2138,7 +2140,12 @@ function draw(now){
       ctx.restore();
     }
   }
-  requestAnimationFrame(draw);
+  _drawErrs = 0;
+  }catch(e){
+    if (++_drawErrs >= 60) return;
+  }finally{
+    requestAnimationFrame(draw);
+  }
 }
 function spawnConfetti(){
   for(let i=0;i<150;i++){

@@ -23,6 +23,10 @@
   header .tag{ color:var(--dim); font-size:12px; margin-top:4px; letter-spacing:2px;}
   #wrap{ display:flex; gap:18px; align-items:flex-start; justify-content:center; padding:10px 14px 26px; flex:1; width:100%; max-width:1100px;}
   #boardBox{ position:relative; }
+  #disasterBar{ display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:2px 6px; margin-bottom:8px; padding:6px 10px; border:1px solid #1b2438; border-radius:10px; background:rgba(13,19,34,.82); font-size:12.5px; color:var(--dim); }
+  #disasterBar b{ color:var(--text); }
+  #disasterBar.soon{ border-color:#8a6d1f; box-shadow:0 0 12px rgba(230,200,90,.28); animation:dbarPulse 1s infinite alternate; }
+  @keyframes dbarPulse{ from{ background:rgba(13,19,34,.82); } to{ background:rgba(96,76,22,.38); } }
   canvas{ display:block; border-radius:14px; }
   #side{ width:300px; flex:0 0 300px; display:flex; flex-direction:column; gap:10px;}
   #leftbar{ width:170px; flex:0 0 170px; display:flex; flex-direction:column; gap:10px; align-self:stretch;}
@@ -139,6 +143,7 @@
   }
   @media (max-width:520px){
     .panel{ padding:18px 16px; max-height:88vh; overflow-y:auto;}
+    #disasterBar{ font-size:11px; padding:4px 8px; margin-bottom:6px; gap:1px 4px;}
     .panel h2{ font-size:20px;}
     .skrow{ flex-direction:column; gap:10px; margin-top:12px;}
     .skcard{ min-width:0; padding:12px 14px; display:grid; grid-template-columns:36px 1fr; column-gap:12px; align-items:center; text-align:left;}
@@ -161,7 +166,7 @@
     <div class="card"><h3>道具箱</h3><div id="invBarBody"></div></div>
     <div class="card logcard"><h3>动态</h3><div id="logBody"></div></div>
   </div>
-  <div id="boardBox"><canvas id="cv"></canvas></div>
+  <div id="boardBox"><div id="disasterBar"></div><canvas id="cv"></canvas></div>
   <div id="side">
     <div class="card">
       <h3>玩家</h3>
@@ -210,7 +215,10 @@
       </select>
       <div style="height:8px"></div>
       <select id="skillSel">
-        <option value="1" selected>技能：开局 3 选 1</option>
+        <option value="1" selected>技能：开局 3 选 1 · 可用 1 次</option>
+        <option value="3">技能：开局 3 选 1 · 可用 3 次</option>
+        <option value="5">技能：开局 3 选 1 · 可用 5 次</option>
+        <option value="10">技能：开局 3 选 1 · 可用 10 次</option>
         <option value="0">技能：关闭</option>
       </select>
       <div style="height:10px"></div>
@@ -255,7 +263,7 @@ function setBoardSize(n){          // 四家出生点到王座始终等距
   SPAWN.blue = {x:c,y:0}; SPAWN.green = {x:0,y:c}; SPAWN.red = {x:N-1,y:c}; SPAWN.orange = {x:c,y:N-1};
 }
 const DIRS = [[1,0],[-1,0],[0,1],[0,-1]];
-/* ---- 技能池（开局每人随机抽 3 选 1，整局限用 1 次） ---- */
+/* ---- 技能池（开局每人随机抽 3 选 1，整局限用 skillMax 次） ---- */
 const SKILLS = [
   {id:'breakwall', icon:'💥', name:'墙面爆破', target:'wall', desc:'击碎棋盘上任意一堵墙'},
   {id:'phase',     icon:'👻', name:'穿墙',     target:'wall', desc:'穿过身边一堵墙，落到墙另一侧的空格'},
@@ -289,8 +297,9 @@ let turnIdx = 0, winner = null, busy = false, turnCount = 0, passStreak = 0;
 let mode = 'pve', wallStock = 8, muted = false, fastAI = false;
 let itemsOn = false, itemInterval = 5, itemClock = 0;   // 道具系统：定时发到玩家道具箱
 let disastersOn = true, disasterInterval = 3;     // 天灾系统：每 N 回合降下随机场地天灾
+let nextDisaster = 'acid';                        // 预告：下一场天灾种类（触发后立即重掷，棋盘顶部倒计时展示）
 let collapsed = [], fireWalls = [];             // 地陷：塌陷格 {x,y,end} / 烈阳：火墙 {kind,x,y,end}（end=到期回合数）
-let skillsOn = true;                            // 技能系统开关
+let skillsOn = true, skillMax = 1;                // 技能系统开关 / 每人每局技能可用次数
 let pendingSkill = null, pendingItem = null;    // 目标选择中：待确认的技能/道具
 let skArming = null;                            // 左栏技能卡二次确认中：确认发起者的颜色
 let draftTimer = 0, netSkillPicked = false;     // 联机选技：30s 代选定时器 / 本端已提交标记
@@ -324,7 +333,7 @@ const qw = +Q.get('walls');
 if (Q.get('walls') && qw>=1) wallStock = Math.min(20, qw);
 if (Q.get('size')){ const n=+Q.get('size'); if([9,11,13,15].includes(n)) setBoardSize(n); }
 if (Q.get('item')){ const v=+Q.get('item'); if([3,5,7,10].includes(v)){ itemsOn=true; itemInterval=v; } }
-if (Q.get('skill')==='0') skillsOn = false;
+if (Q.get('skill')==='0'){ skillsOn = false; } else if (Q.get('skill')){ const sm=+Q.get('skill'); if([1,3,5,10].includes(sm)){ skillMax=sm; } }
 if (Q.get('disaster')==='0'){ disastersOn = false; } else if (Q.get('disaster')){ const di=+Q.get('disaster'); if([3,10,20].includes(di)){ disasterInterval=di; } }
 if (Q.get('fast') === '1') fastAI = true;
 srand(Q.get('seed') ? +Q.get('seed') : ((Date.now()*2654435761)>>>0));
@@ -455,7 +464,7 @@ function newGame(){
       human,
       tween:null, ap:SYNC_APMAX, lastAct:0, nextThink:0, bank:false, burstLeft:0,
       inv:[],                                     // 道具箱：'wall' 🧱 / 'hammer' 🔨
-      skill:null, skillUsed:false, skillOffer:[], // 本局技能 / 是否已用 / 开局 3 选 1 候选
+      skill:null, skillUsed:0, skillOffer:[],     // 本局技能 / 已用次数 / 开局 3 选 1 候选
       frozenTurns:0, frozenUntil:0, extraActs:0, paint:null,
       shield:false,
       rainBoost:false,                            // 🌧️ 暴雨加成：本回合多一次行动（同步模式=下一步不耗操作点）
@@ -466,6 +475,7 @@ function newGame(){
   THRONE.x = THRONE.y = (N-1)/2;         // 王座复位正中（上一局可能被 👑 技能搬走）
   itemClock = 0; boxes = []; traps = [];
   collapsed = []; fireWalls = [];            // 天灾残留清空
+  nextDisaster = rollDisaster();             // 重新预告下一场天灾
   logLines = [];
   logAppend('🏁 新对局开始，抢座大战一触即发', null);
   confetti = []; fx = []; toastMsg = null; pendingWall = null;
@@ -483,7 +493,7 @@ function startDraft(){
   for(const p of players){
     const pool=[...SKILLS];
     for(let i=pool.length-1;i>0;i--){ const j=Math.floor(rnd()*(i+1)); [pool[i],pool[j]]=[pool[j],pool[i]]; }
-    p.skill=null; p.skillUsed=false;
+    p.skill=null; p.skillUsed=0;
     p.skillOffer = pool.slice(0,3).map(s=>s.id);
     draft.offers[p.color]=[...p.skillOffer];
     if (p.ai) pickSkill(p, aiPickSkill(p.skillOffer), true);   // AI 按强度选
@@ -506,7 +516,7 @@ function showDraft(color){
   const p = players.find(q=>q.color===c); if (!p){ draftDone(); return; }
   const d=document.getElementById('dPanel');
   d.innerHTML = `<h2><span style="color:${COLORS[p.color].main}">●</span> ${COLORS[p.color].name}：选择本局技能</h2>
-    <div class="sub">免费即时 · 整局限用 1 次 · 全员选完自动开局</div>
+    <div class="sub">免费即时 · 整局限用 ${skillMax} 次 · 全员选完自动开局</div>
     <div class="skrow">`+
     draft.offers[p.color].map(id=>{
       const s=SKILLS.find(x=>x.id===id);
@@ -533,7 +543,7 @@ function startDraftOnline(){
   for(const p of players){
     const pool=[...SKILLS];
     for(let i=pool.length-1;i>0;i--){ const j=Math.floor(rnd()*(i+1)); [pool[i],pool[j]]=[pool[j],pool[i]]; }
-    p.skill=null; p.skillUsed=false;
+    p.skill=null; p.skillUsed=0;
     p.skillOffer = pool.slice(0,3).map(s=>s.id);
     draft.offers[p.color]=[...p.skillOffer];
     if (p.ai) pickSkill(p, aiPickSkill(p.skillOffer), true);
@@ -625,7 +635,7 @@ function useHammer(p, kind, x, y){       // 消耗道具箱里的 🔨 并击碎
   return true;
 }
 
-/* ---- 技能执行（免费即时：不耗回合/操作点、不结束回合；整局每人限 1 次） ---- */
+/* ---- 技能执行（免费即时：不耗回合/操作点、不结束回合；整局每人限 skillMax 次） ---- */
 const paintOf = c => { const q=players.find(x=>x.color===c); return (q && q.paint) || c; };
 const cheb = (x,y,c) => Math.max(Math.abs(x-c.x), Math.abs(y-c.y));
 
@@ -648,7 +658,7 @@ function teleport(pawn, cell){                 // 传送并带动 90ms 滑动动
 }
 function shieldBlockSkill(p, v, sk){       // 🛡️ 护盾挡下指向性技能：技能照常消耗、效果免疫（特效全员可见）
   v.shield = false;
-  p.skillUsed = true;
+  p.skillUsed = (p.skillUsed||0)+1;
   fx.push({type:'shieldpop', x:v.cell.x, y:v.cell.y, t0:performance.now()});
   netEv({type:'shieldfx', color:v.color});
   netEv({type:'skill', fx:'pick'});
@@ -661,7 +671,7 @@ function shieldBlockSkill(p, v, sk){       // 🛡️ 护盾挡下指向性技�
 
 function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=穿墙方向 / {color}=角色 / null
   const sk = SKILLS.find(s=>s.id===id);
-  if (!sk || p.skill!==id || p.skillUsed) return false;
+  if (!sk || p.skill!==id || (p.skillUsed||0)>=skillMax) return false;
   let done = false;
   switch(id){
     case 'breakwall': {                        // 💥 击碎任意一堵墙（复用锤子逻辑）
@@ -675,7 +685,7 @@ function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=�
       teleport(p, {x:nx,y:ny}); sJump();
       netEv({type:'skill', fx:'jump'}); done = true;
       if (p.cell.x===THRONE.x && p.cell.y===THRONE.y){   // 穿墙直达王座：直接获胜
-        p.skillUsed = true; renderPanel(); endGame(p); return true;
+        p.skillUsed = (p.skillUsed||0)+1; renderPanel(); endGame(p); return true;
       }
       break; }
     case 'steal': {                            // 🪓 夺取目标道具箱里 1 个道具
@@ -731,8 +741,8 @@ function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=�
       sPick(); netEv({type:'skill', fx:'pick'}); done = true; break; }
   }
   if (!done) return false;
-  p.skillUsed = true;
-  logPush('释放技能 '+sk.icon+' '+sk.name, p.color);
+  p.skillUsed = (p.skillUsed||0)+1;
+  logPush('释放技能 '+sk.icon+' '+sk.name+'（剩 '+Math.max(0,skillMax-p.skillUsed)+'/'+skillMax+' 次）', p.color);
   renderPanel();
   return true;
 }
@@ -790,11 +800,18 @@ function expireDisasters(){                 // 天灾到期结算（仅主机/�
     logPush('🕳️ '+cOut.length+' 个塌陷格恢复如初', null);
   }
 }
+function rollDisaster(){                     // 按权重随机决定天灾种类（💥 大爆炸权重调低，≈6%）
+  const DW = {acid:1, thunder:1, sink:1, rain:1, sun:1, bang:0.35};
+  let r = rnd()*Object.values(DW).reduce((a,b)=>a+b,0), kind='acid';
+  for (const k in DW){ r -= DW[k]; if (r<0){ kind=k; break; } }
+  return kind;
+}
 function maybeDisaster(){                    // 天灾调度：经典每 N 手 / 同步每 N*4 次行动
   if (!disastersOn || winner || !hostSim()) return;
   const every = isSyncMode() ? disasterInterval*4 : disasterInterval;
   if (turnCount % every !== 0) return;
-  const kind = Object.keys(DISASTERS)[Math.floor(rnd()*6)];
+  const kind = nextDisaster;                 // 降下预告的这场，并立即掷出下一场供顶部倒计时展示
+  nextDisaster = rollDisaster();
   const D = DISASTERS[kind];
   logPush(D.icon+' 天灾降临：'+D.name, null);
   const extra = ({acid:disasterAcid, thunder:disasterThunder, sink:disasterSink,
@@ -818,15 +835,16 @@ function disasterAcid(){                     // ☔ 酸雨：随机腐蚀约 1/3
   logPush('☔ 酸雨腐蚀了 '+n+' 堵墙', null);
   return {count:n};
 }
-function disasterThunder(){                  // ⚡ 暴雷：劈中约 1/4 棋盘区域，区内棋子眩晕 1 回合
-  const half = Math.ceil(N/2);
-  const qx = rnd()<0.5? 0 : N-half, qy = rnd()<0.5? 0 : N-half;
-  const hits = players.filter(p=>!p.left && p.cell.x>=qx && p.cell.x<qx+half && p.cell.y>=qy && p.cell.y<qy+half);
+function disasterThunder(){                  // ⚡ 暴雷：劈中约 1/4 的随机散布格子，格上棋子眩晕 1 回合
+  const cands=[];
+  for(let y=0;y<N;y++) for(let x=0;x<N;x++) cands.push({x,y});
+  const cells = shuffleArr(cands).slice(0, Math.floor(N*N/4)).map(c=>[c.x,c.y]);
+  const hits = players.filter(p=>!p.left && cells.some(([x,y])=>p.cell.x===x&&p.cell.y===y));
   for (const p of hits) applyStun(p);
   logPush(hits.length
     ? '⚡ 暴雷劈中 '+hits.map(p=>COLORS[p.color].name).join('、')+'，眩晕 1 回合'
     : '⚡ 暴雷劈下，无人被击中', null);
-  return {x:qx, y:qy, w:half};
+  return {cells};
 }
 function spawnDrop(p){                       // 掉回出生点（出生点被占则滑落到最近空格）
   const s = SPAWN[p.color];
@@ -871,7 +889,7 @@ function disasterRain(){                     // 🌧️ 暴雨：冲走所有玩
   }
   return {};
 }
-function disasterSun(){                      // ☀️ 烈阳：随机点燃 10 面火墙（无主），2 回合后烧尽
+function disasterSun(){                      // ☀️ 烈阳：随机点燃 10 面火墙（无主），5 回合后烧尽
   let placed=0;
   for (const s of shuffleArr(allWallSpots().slice())){
     if (placed>=10) break;
@@ -879,11 +897,11 @@ function disasterSun(){                      // ☀️ 烈阳：随机点燃 10 
     if (!wallOK(kind,x,y)) continue;         // 候选基于落墙前快照，逐面复验避免互相冲突/断路
     (kind==='h'?wallsH:wallsV).add(K(x,y));
     wallOwner[kind+' '+K(x,y)] = null;       // 无主之火：不计入任何玩家的墙数
-    fireWalls.push({kind, x, y, end:turnCount+2});
+    fireWalls.push({kind, x, y, end:turnCount+5});
     fx.push({type:'sunfx', kind, x, y, t0:performance.now()});
     placed++;
   }
-  if (placed){ sWall(); logPush('☀️ 烈阳点燃了 '+placed+' 面火墙（2 回合后烧尽）', null); }
+  if (placed){ sWall(); logPush('☀️ 烈阳点燃了 '+placed+' 面火墙（5 回合后烧尽）', null); }
   else logPush('☀️ 烈阳当空，但无处可以起火', null);
   return {count:placed};
 }
@@ -1108,8 +1126,8 @@ function bestToward(p, ms){
 function aiUseItems(p){                      // 免费道具：AI 择机自动用（函数内 logPush/netEv 自带联机同步）
   if (useShieldItem(p)) return true;         // 🛡️ 保护卡：拿到就用（免疫 1 次技能/陷阱）
   const iR = p.inv.indexOf('restore');
-  if (iR>=0 && skillsOn && p.skill && p.skillUsed){    // 🔋 技能用过才恢复
-    p.inv.splice(iR,1); p.skillUsed=false;
+  if (iR>=0 && skillsOn && p.skill && (p.skillUsed||0)>0){    // 🔋 技能用过才恢复（次数+1，不超上限）
+    p.inv.splice(iR,1); p.skillUsed=Math.max(0,(p.skillUsed||0)-1);
     sPick(); renderPanel(); logPush('使用 🔋 技能恢复卡，技能已刷新', p.color);
     return true;
   }
@@ -1342,8 +1360,8 @@ const AI_SKILL_RANK = { phase:9, sprint:8, breakwall:7, swap:6, freeze:6, throne
 function aiPickSkill(offer){               // AI 选技：按强度排序取最高
   return offer.slice().sort((a,b)=>(AI_SKILL_RANK[b]||0)-(AI_SKILL_RANK[a]||0))[0];
 }
-function aiUseSkill(p){                    // AI 用技启发式（免费即时，整局一次，择机自动放）
-  if (!skillsOn || !p.skill || p.skillUsed) return false;
+function aiUseSkill(p){                    // AI 用技启发式（免费即时，每局 skillMax 次，择机自动放）
+  if (!skillsOn || !p.skill || (p.skillUsed||0)>=skillMax) return false;
   const dists=allDists();
   const myD=dists[p.color];
   const opps=players.filter(q=>q!==p&&!q.left);
@@ -1594,8 +1612,8 @@ function hostApplyAction(p, a){
     const i = p.inv.indexOf('restore');
     if (i<0) return reject('没有 🔋 恢复卡');
     if (!skillsOn || !p.skill) return reject('本局没有技能，恢复卡用不了');
-    if (!p.skillUsed) return reject('技能还没用过，无需恢复');
-    p.inv.splice(i,1); p.skillUsed=false;
+    if (!(p.skillUsed>0)) return reject('技能还没用过，无需恢复');
+    p.inv.splice(i,1); p.skillUsed=Math.max(0,(p.skillUsed||0)-1);
     logPush('使用 🔋 技能恢复卡，技能已刷新', p.color);
     sPick(); renderPanel();
   }else if (a.type==='itemuse' && a.kind==='trap'){
@@ -1609,7 +1627,7 @@ function hostApplyAction(p, a){
     const sk = SKILLS.find(s=>s.id===a.id);
     if (!skillsOn) return reject('本局未开启技能');
     if (!sk || p.skill!==a.id) return reject('技能不符');
-    if (p.skillUsed) return reject('技能已用过');
+    if (p.skillUsed>=skillMax) return reject('技能次数已用完');
     const t=a.t||{};
     if (sk.id==='breakwall'){
       const set=t.kind==='h'?wallsH:wallsV;
@@ -1674,7 +1692,7 @@ function rr(x,y,w,h,r){ ctx.beginPath(); ctx.roundRect(x,y,w,h,r); }
 function layout(){
   const narrow = window.innerWidth <= 820;
   const maxW = narrow ? window.innerWidth-36 : window.innerWidth-330;
-  const maxH = window.innerHeight - 170;
+  const maxH = window.innerHeight - 206;
   boardPx = Math.max(300, Math.min(maxW, maxH, N>=13?680:620));
   const dpr = window.devicePixelRatio||1;
   cv.width = Math.round(boardPx*dpr); cv.height = Math.round(boardPx*dpr);
@@ -1743,20 +1761,35 @@ function draw(now){
   for(const key of wallsH){
     const[a,b]=key.split(',').map(Number);
     const fw = fireWalls.some(q=>q.kind==='h'&&q.x===a&&q.y===b);   // 🔥 烈阳火墙：橙红燃烧
-    const col = fw ? '#ff8b3d' : (COLORS[paintOf(wallOwner['h '+key])]?.main || '#7f8db0');
-    ctx.strokeStyle=col; ctx.shadowColor=col; ctx.shadowBlur= fw ? 12+6*Math.sin(now/110) : 7;
+    const col = fw ? `hsl(${16+9*Math.sin(now/160+a*1.3+b)},100%,${56+9*Math.sin(now/120+a+b)})` : (COLORS[paintOf(wallOwner['h '+key])]?.main || '#7f8db0');
+    ctx.strokeStyle=col; ctx.shadowColor=col; ctx.shadowBlur= fw ? 16+8*Math.sin(now/110+a+b) : 7;
     ctx.beginPath(); ctx.moveTo(px(a),px(b)); ctx.lineTo(px(a+2),px(b)); ctx.stroke();
   }
   for(const key of wallsV){
     const[a,b]=key.split(',').map(Number);
     const fw = fireWalls.some(q=>q.kind==='v'&&q.x===a&&q.y===b);   // 🔥 烈阳火墙：橙红燃烧
-    const col = fw ? '#ff8b3d' : (COLORS[paintOf(wallOwner['v '+key])]?.main || '#7f8db0');
-    ctx.strokeStyle=col; ctx.shadowColor=col; ctx.shadowBlur= fw ? 12+6*Math.sin(now/110) : 7;
+    const col = fw ? `hsl(${16+9*Math.sin(now/160+a+b*1.3)},100%,${56+9*Math.sin(now/120+a*b)})` : (COLORS[paintOf(wallOwner['v '+key])]?.main || '#7f8db0');
+    ctx.strokeStyle=col; ctx.shadowColor=col; ctx.shadowBlur= fw ? 16+8*Math.sin(now/110+a*b) : 7;
     ctx.beginPath(); ctx.moveTo(px(a),px(b)); ctx.lineTo(px(a),px(b+2)); ctx.stroke();
   }
   ctx.shadowBlur=0;
-  // 🔥 烈阳火墙：橙焰标记（无主之火，烧尽即灭）
+  // 🔥 烈阳火墙：跳动的火苗粒子 + 🔥 标记（无主之火，烧尽即灭）
   for(const f of fireWalls){
+    const horiz = f.kind==='h';
+    const x0 = px(f.x), y0 = px(f.y);
+    for(let i=0;i<3;i++){                     // 沿墙 3 个火苗：上飘 + 摇曳的径向渐变光球
+      const u=(i+0.5)/3;
+      const sway=Math.sin(now/140+f.x*2.1+f.y*1.3+i*2.4)*CELL*0.07;
+      const rise=(Math.sin(now/95+i*1.9+f.x+f.y)*0.5+0.5)*CELL*0.10;
+      const cx2 = horiz ? x0+CELL*2*u+sway*0.4 : x0+sway;
+      const cy2 = horiz ? y0-rise : y0+CELL*2*u;
+      const r = CELL*(0.13+0.06*Math.sin(now/120+i*2.1+f.y));
+      const g = ctx.createRadialGradient(cx2,cy2,0,cx2,cy2,r);
+      g.addColorStop(0,'rgba(255,240,180,.95)');
+      g.addColorStop(0.45,'rgba(255,150,50,.8)');
+      g.addColorStop(1,'rgba(255,60,20,0)');
+      ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx2,cy2,r,0,7); ctx.fill();
+    }
     const mx = f.kind==='h'? px(f.x+1) : px(f.x), my = f.kind==='h'? px(f.y) : px(f.y+1);
     ctx.save();
     ctx.globalAlpha=0.75+0.25*Math.sin(now/150+f.x*1.7+f.y);
@@ -2092,17 +2125,19 @@ function draw(now){
             ctx.moveTo(sx,sy); ctx.lineTo(sx-7,sy+18);
           }
           ctx.stroke(); ctx.restore();
-        }else if (f.kind==='thunder'){              // ⚡ 暴雷：象限高亮 + 白闪 + ⚡
+        }else if (f.kind==='thunder'){              // ⚡ 暴雷：随机格群高亮 + 白闪 + 每格 ⚡
           ctx.save();
           if (t<0.15){ ctx.fillStyle='rgba(255,255,255,'+(0.5*(1-t/0.15)).toFixed(2)+')'; ctx.fillRect(0,0,boardPx,boardPx); }
+          const cells = f.cells||[];
           ctx.globalAlpha=(1-t)*0.28;
-          ctx.fillStyle='#aee7ff'; ctx.fillRect(px(f.x), px(f.y), CELL*f.w, CELL*f.w);
+          ctx.fillStyle='#aee7ff';
+          for (const [cx,cy] of cells) ctx.fillRect(px(cx), px(cy), CELL, CELL);
           ctx.globalAlpha=(1-t)*0.85;
-          ctx.strokeStyle='#dff4ff'; ctx.lineWidth=3;
-          ctx.strokeRect(px(f.x), px(f.y), CELL*f.w, CELL*f.w);
+          ctx.strokeStyle='#dff4ff'; ctx.lineWidth=2;
+          for (const [cx,cy] of cells) ctx.strokeRect(px(cx)+1, px(cy)+1, CELL-2, CELL-2);
           ctx.globalAlpha=t<0.5?1:(1-t)/0.5;
-          ctx.font=Math.floor(CELL*1.3)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-          ctx.fillText('⚡', px(f.x)+CELL*f.w/2, px(f.y)+CELL*f.w/2);
+          ctx.font=Math.floor(CELL*0.42)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+          for (const [cx,cy] of cells) ctx.fillText('⚡', px(cx)+CELL/2, px(cy)+CELL/2);
           ctx.restore();
         }else if (f.kind==='sun'){                  // ☀️ 烈阳：橙光罩顶
           ctx.save();
@@ -2193,7 +2228,19 @@ function buildPanel(){
     el.appendChild(row);
   }
 }
+function renderDisasterBar(){                // 棋盘顶部：下一场天灾类型 + 回合倒计时
+  const bar = document.getElementById('disasterBar'); if (!bar) return;
+  if (winner){ bar.style.display='none'; return; }
+  bar.style.display='flex';
+  if (!disastersOn){ bar.classList.remove('soon'); bar.innerHTML='<span>☄️ 天灾已关闭</span>'; return; }
+  const every = isSyncMode() ? disasterInterval*4 : disasterInterval;
+  const rem = every - (turnCount % every);
+  const D = DISASTERS[nextDisaster] || DISASTERS.acid;
+  bar.classList.toggle('soon', rem<=1);
+  bar.innerHTML = '☄️ 下一场天灾：<b>'+D.icon+' '+D.name+'</b> · '+(rem<=1 ? '<b>即将降临！</b>' : '还有 <b>'+rem+'</b> '+(isSyncMode()?'次行动':'回合'));
+}
 function renderPanel(){
+  renderDisasterBar();
   const dists = winner? null : allDists();
   for(const p of players){
     const row=document.getElementById('prow-'+p.color); if(!row) continue;
@@ -2214,9 +2261,10 @@ function renderPanel(){
     if (skl){
       const mine = p===localFreeActor() && !winner;
       const sk = p.skill? SKILLS.find(s=>s.id===p.skill) : null;
-      skl.innerHTML = sk? `<span class="islot${mine&&!p.skillUsed?' mine':''}${pendingSkill===sk.id?' on':''}" title="${sk.name}：${sk.desc}${p.skillUsed?'（已用）':''}">${sk.icon}</span>` : '';
+      const left = Math.max(0, skillMax-(p.skillUsed||0));
+      skl.innerHTML = sk? `<span class="islot${mine&&left>0?' mine':''}${pendingSkill===sk.id?' on':''}" title="${sk.name}：${sk.desc}（剩 ${left}/${skillMax} 次）">${sk.icon}${skillMax>1?`<i style="font-style:normal;font-size:.75em;opacity:.8">×${left}</i>`:''}</span>` : '';
       const sp=skl.querySelector('.islot');
-      if (sp && mine && !p.skillUsed) sp.onclick=()=>clickSkillSlot(p);
+      if (sp && mine && left>0) sp.onclick=()=>clickSkillSlot(p);
     }
     const steps=row.querySelector('.steps');
     if (winner===p) steps.textContent='👑 赢';
@@ -2251,7 +2299,8 @@ function renderLeftbar(){                // 棋盘左侧技能卡 + 道具箱
   const me=localFreeActor();
   if (!me || winner || (pendingSkill&&pendingSkill!==(me.skill||''))) skArming=null;
   const sk=(me&&me.skill)?SKILLS.find(s=>s.id===me.skill):null;
-  const used=me&&me.skillUsed;
+  const left=sk?Math.max(0,skillMax-(me.skillUsed||0)):0;
+  const used=!!me&&left<=0;
   const usable=!!(sk&&!used&&!winner);
   const armed=!!(sk&&pendingSkill===sk.id);
   const confirming=usable&&!armed&&skArming===me.color;
@@ -2262,7 +2311,7 @@ function renderLeftbar(){                // 棋盘左侧技能卡 + 道具箱
     skBody.innerHTML=`
       <div class="${cls}" id="lskCard">
         <div class="ico">${sk.icon}</div>
-        <div class="nm">${sk.name}${used?' · 已用':''}</div>
+        <div class="nm">${sk.name}${used?' · 已用':(skillMax>1?` · 剩 ${left} 次`:'')}</div>
         <div class="ds">${used?'本局技能已释放':sk.desc}</div>
         ${armed?`<div class="ds" style="color:#e6c94f;margin-top:4px">已瞄准：点击棋盘上的目标；再点本卡可取消</div>`:''}
         ${confirming?`<div class="lskbtns"><button class="primary" id="lskGo">使 用</button><button id="lskNo">取 消</button></div>`:''}
@@ -2304,12 +2353,12 @@ function clickInvSlot(p, i){          // 点击道具箱：🧱 +1 墙；🔨 �
     }
   }else if (kind==='restore'){
     if (!skillsOn || !p.skill){ toast('本局没有技能，恢复卡用不了'); return; }
-    if (!p.skillUsed){ toast('技能还没用过，无需恢复'); return; }
+    if (!(p.skillUsed>0)){ toast('技能还没用过，无需恢复'); return; }
     if (isOnline()){
       if (hostSim()) hostApplyAction(p, {type:'itemuse', kind:'restore'});
       else { busy=true; setTimeout(()=>{busy=false;},2500); netSend({t:'act', a:{type:'itemuse', kind:'restore'}}); }
     }else{
-      p.inv.splice(i,1); p.skillUsed=false; sPick(); renderPanel();
+      p.inv.splice(i,1); p.skillUsed=Math.max(0,(p.skillUsed||0)-1); sPick(); renderPanel();
       logPush('使用 🔋 技能恢复卡，技能已刷新', p.color);
       toast('🔋 技能使用次数已恢复');
     }
@@ -2339,7 +2388,7 @@ function clickInvSlot(p, i){          // 点击道具箱：🧱 +1 墙；🔨 �
 function clickSkillSlot(p){              // 点击技能槽：无目标技能立即放；有目标进入选择模式
   if (winner) return;
   if (!isSyncMode() && cur()!==p){ toast('还没轮到你'); return; }
-  if (p.skillUsed || !p.skill) return;
+  if ((p.skillUsed||0)>=skillMax || !p.skill) return;
   const sk=SKILLS.find(s=>s.id===p.skill); if (!sk) return;
   if (sk.target===null){
     if (isOnline()){
@@ -2359,7 +2408,7 @@ function syncSelects(){
   document.getElementById('sizeSel').value = String(N);
   document.getElementById('wallSel').value = String(wallStock);
   document.getElementById('itemSel').value = String(itemsOn?itemInterval:0);
-  document.getElementById('skillSel').value = skillsOn? '1':'0';
+  document.getElementById('skillSel').value = skillsOn? String(skillMax):'0';
   document.getElementById('disasterSel').value = disastersOn? String(disasterInterval) : '0';
   document.getElementById('btnSpeed').textContent = fastAI? '⚡ 极速' : '⚡ 正常';
 }
@@ -2411,7 +2460,8 @@ function serializeState(){
     wallsH: [...wallsH], wallsV: [...wallsV], wallOwner,
     boxes: boxes.map(b=>({x:b.x, y:b.y, i:b.i})),
     traps: traps.map(t=>({x:t.x, y:t.y, o:t.o})),
-    disastersOn, disasterInterval,
+    disastersOn, disasterInterval, nd: nextDisaster,
+    skillsOn, skillMax,
     collapsed: collapsed.map(c=>({x:c.x, y:c.y, end:c.end})),
     fireWalls: fireWalls.map(f=>({kind:f.kind, x:f.x, y:f.y, end:f.end})),
     turnIdx, turnCount, passStreak,
@@ -2420,7 +2470,7 @@ function serializeState(){
     players: players.map(p=>({
       color:p.color, name:p.name, cell:{x:p.cell.x, y:p.cell.y},
       walls:p.walls, left:p.left, ai:p.ai, human:p.human,
-      inv:[...p.inv], sk:p.skill, sku:p.skillUsed?1:0,
+      inv:[...p.inv], sk:p.skill, sku:p.skillUsed||0,
       fzt:p.frozenTurns, fzu:Math.round(p.frozenUntil), exa:p.extraActs, pt:p.paint,
       cnf:p.confused?1:0, stn:p.stunTag?1:0, shd:p.shield?1:0, rb:p.rainBoost?1:0,
       ap:Math.round(p.ap*100)/100,
@@ -2449,6 +2499,9 @@ function applySnapshot(s, ev){
   for (const k of prevColl){ const [x,y]=k.split(',').map(Number); fx.push({type:'sinkhole', x, y, up:true, t0:performance.now()}); }
   disastersOn = s.disasters!==false;
   disasterInterval = [3,10,20].includes(s.disasterInterval) ? s.disasterInterval : 3;
+  nextDisaster = DISASTERS[s.nd] ? s.nd : nextDisaster;   // 跟随房主预告的下一场天灾
+  skillsOn = s.skills!==false;
+  skillMax = [1,3,5,10].includes(s.skillMax) ? s.skillMax : 1;
   turnIdx = s.turnIdx; turnCount = s.turnCount; passStreak = s.passStreak;
   itemClock = 0;
   draft = s.draft ? {offers:s.draft.offers, picked:s.draft.picked} : null;
@@ -2458,7 +2511,7 @@ function applySnapshot(s, ev){
       color:sp.color, name:sp.name, cell:{x:sp.cell.x, y:sp.cell.y},
       walls:sp.walls, left:sp.left, ai:sp.ai, human:sp.human,
       inv: sp.inv? [...sp.inv] : [],
-      skill: sp.sk||null, skillUsed: !!sp.sku, skillOffer:[],   // 候选从 draft.offers 恢复，不走玩家字段
+      skill: sp.sk||null, skillUsed: sp.sku||0, skillOffer:[],   // 候选从 draft.offers 恢复，不走玩家字段
       frozenTurns: sp.fzt||0,
       frozenUntil: sp.fzu ? performance.now() + Math.max(0, sp.fzu - hostNow) : 0,   // 主机时钟 → 本地时钟
       extraActs: sp.exa||0, paint: sp.pt||null,
@@ -2540,6 +2593,7 @@ function newOnlineGame(seats, settings){
   wallStock = settings.walls;
   itemsOn = settings.items>0; itemInterval = settings.items||5;
   skillsOn = settings.skills!==false;
+  skillMax = [1,3,5,10].includes(settings.skillMax) ? settings.skillMax : 1;
   disastersOn = settings.disasters!==false;
   disasterInterval = [3,10,20].includes(settings.disasterInterval) ? settings.disasterInterval : 3;
   wallsH.clear(); wallsV.clear(); wallOwner = {};
@@ -2551,7 +2605,7 @@ function newOnlineGame(seats, settings){
       cell:{...SPAWN[c]}, walls:wallStock, left:false,
       ai: !occupied, human: occupied,
       tween:null, ap:SYNC_APMAX, lastAct:performance.now(), nextThink:0, bank:false, burstLeft:0,
-      inv:[], skill:null, skillUsed:false, skillOffer:[],
+      inv:[], skill:null, skillUsed:0, skillOffer:[],
       frozenTurns:0, frozenUntil:0, extraActs:0, paint:null,
       shield:false,
       rainBoost:false,
@@ -2561,6 +2615,7 @@ function newOnlineGame(seats, settings){
   winner = null; busy = false; turnCount = 0; passStreak = 0;
   itemClock = 0; boxes = []; traps = [];
   collapsed = []; fireWalls = [];            // 天灾残留清空
+  nextDisaster = rollDisaster();             // 重新预告下一场天灾（随首份快照同步给全员）
   logLines = [];
   logPush('🏁 新对局开始，抢座大战一触即发', null);
   confetti = []; fx = []; toastMsg = null; pendingWall = null;
@@ -2575,7 +2630,7 @@ function netStartRound(){
   let sync, watch;
   if (sel){ const v = sel.value; sync = v.includes('1'); watch = v.startsWith('w'); }
   else { sync = isSyncMode(); watch = netWatch; }     // 对局中重开：沿用本局设置
-  netSend({ t:'start', settings:{ sync, watch, size:N, walls:wallStock, items: itemsOn?itemInterval:0, skills: skillsOn, disasters: disastersOn, disasterInterval } });
+  netSend({ t:'start', settings:{ sync, watch, size:N, walls:wallStock, items: itemsOn?itemInterval:0, skills: skillsOn, skillMax, disasters: disastersOn, disasterInterval } });
 }
 
 /* ---- 连接与房间 UI ---- */
@@ -2793,7 +2848,7 @@ function showRules(first){
       规则保护：不许放墙把任何玩家彻底堵死——谁都得起码留一条活路。<br>
       <b>同步模式</b>：取消回合，四人同时行动。每人 3 个操作点（上限3），走子/放墙各耗 1 点，动作间隔 0.5 秒，每秒恢复 1 点。<br>
       <b>道具模式</b>（设置里开启）：棋盘每隔几秒随机出现 🎁 宝箱，走上去拾取后开出随机道具（道具箱上限 2 个）：🧱 +1 堵墙；🔨 击碎任意一堵墙；🔋 恢复技能次数 1 次；🪤 埋陷阱（仅自己可见，踩中者掉回出生点）；🌀 混乱对手（其下一步方向上下左右颠倒）；🛡️ 保护卡（激活后免疫 1 次敌方指向性技能或陷阱，护盾状态仅自己可见）；💫 眩晕（开箱即触发，拾取者暂停 1 回合）。免费即时，不耗操作点。<br>
-      <b>技能</b>（设置里开启）：开局每人从随机抽出的 3 个候选中选 1 个，整局限用 1 次。点击面板上的技能图标释放，免费即时（不耗回合/操作点；经典模式限自己回合内；被 ❄️ 定身时不可用）。<br>
+      <b>技能</b>（设置里开启）：开局每人从随机抽出的 3 个候选中选 1 个，整局可用次数由设置决定（默认 1 次）。点击面板上的技能图标释放，免费即时（不耗回合/操作点；经典模式限自己回合内；被 ❄️ 定身时不可用）。<br>
       没有队友，没有谈判。<b>4位玩家，1位赢家，0个朋友。</b>
     </div>
     <div class="legend">
@@ -2839,15 +2894,18 @@ document.getElementById('itemSel').onchange = function(){
   if (isOnline() && !hostSim()){ this.value = String(itemsOn?itemInterval:0); }
 };
 document.getElementById('skillSel').onchange = function(){
-  if (isOnline() && !hostSim()){ this.value = skillsOn? '1':'0'; return; }
-  skillsOn = this.value==='1'; refreshHint();
+  if (isOnline() && !hostSim()){ this.value = skillsOn? String(skillMax):'0'; return; }
+  const v = +this.value;
+  skillsOn = v > 0;
+  if (v > 0) skillMax = v;
+  refreshHint();
 };
 document.getElementById('disasterSel').onchange = function(){
   if (isOnline() && !hostSim()){ this.value = disastersOn? String(disasterInterval) : '0'; return; }
   const v = +this.value;
   disastersOn = v > 0;
   if (v > 0) disasterInterval = v;
-  refreshHint();
+  refreshHint(); renderDisasterBar();
 };
 
 /* ================= 启动 ================= */

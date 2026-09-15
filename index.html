@@ -122,11 +122,30 @@
   .skcard .ds{ font-size:11px; color:var(--dim); line-height:1.6; }
   @media (max-width:820px){
     #wrap{ flex-direction:column; align-items:center;}
+    #boardBox{ order:-1;}
     #side{ width:100%; max-width:520px; flex:none; flex-direction:row; flex-wrap:wrap;}
     #side .card{ flex:1 1 45%;}
     #leftbar{ width:100%; max-width:520px; flex:none; flex-direction:row; flex-wrap:wrap; align-self:auto;}
     #leftbar .card{ flex:1 1 45%;}
     #leftbar .logcard{ flex:1 1 100%; height:150px;}
+    .lskbtns button{ padding:11px 6px; font-size:13px; min-height:44px;}
+    .lslot{ min-height:52px;}
+    .islot{ min-width:40px; min-height:40px; display:inline-flex; align-items:center; justify-content:center; font-size:17px; padding:2px 5px; margin-left:4px;}
+    select{ padding:12px 8px;}
+    #side button{ min-height:44px;}
+  }
+  @media (max-width:480px){
+    #side .card, #leftbar .card{ flex:1 1 100%;}
+  }
+  @media (max-width:520px){
+    .panel{ padding:18px 16px; max-height:88vh; overflow-y:auto;}
+    .panel h2{ font-size:20px;}
+    .skrow{ flex-direction:column; gap:10px; margin-top:12px;}
+    .skcard{ min-width:0; padding:12px 14px; display:grid; grid-template-columns:36px 1fr; column-gap:12px; align-items:center; text-align:left;}
+    .skcard .ico{ font-size:26px; grid-row:1 / span 2;}
+    .skcard .nm{ margin:0 0 3px;}
+    .skcard .ds{ line-height:1.5;}
+    .skcard:hover{ transform:none;}
   }
 </style>
 </head>
@@ -1832,7 +1851,7 @@ function draw(now){
     const bob = 2.5*Math.sin(now/300 + b.x*1.3 + b.y*0.9);
     ctx.save();
     ctx.shadowColor='rgba(253,202,0,.55)'; ctx.shadowBlur=10+4*Math.sin(now/200+b.x);
-    ctx.font=(CELL*0.52)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font=Math.floor(CELL*0.52)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText('🎁', px(b.x)+CELL/2, px(b.y)+CELL/2+2+bob);
     ctx.restore();
   }
@@ -1842,7 +1861,7 @@ function draw(now){
     const bob = 1.5*Math.sin(now/260 + t.x + t.y);
     ctx.save();
     ctx.globalAlpha=0.75+0.25*Math.sin(now/300);
-    ctx.font=(CELL*0.42)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font=Math.floor(CELL*0.42)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText('🪤', px(t.x)+CELL/2, px(t.y)+CELL/2+2+bob);
     ctx.restore();
   }
@@ -1888,18 +1907,18 @@ function draw(now){
     ctx.fillStyle='rgba(255,255,255,.35)';
     ctx.beginPath(); ctx.arc(X-CELL*0.09,Y-CELL*0.11,CELL*0.08,0,7); ctx.fill();
     if (isSyncMode()? now<p.frozenUntil : p.frozenTurns>0){   // ❄️ 定身 / 💫 眩晕指示
-      ctx.font=(CELL*0.5)+'px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.font=Math.floor(CELL*0.5)+'px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
       ctx.fillText(p.stunTag?'💫':'❄️', X+CELL*0.28, Y-CELL*0.28);
     }
     if (p.confused){                        // 🌀 混乱待发：头顶摇晃图标
       ctx.save();
       ctx.translate(X-CELL*0.02, Y-CELL*0.52); ctx.rotate(Math.sin(now/180)*0.35);
-      ctx.font=(CELL*0.42)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.font=Math.floor(CELL*0.42)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
       ctx.fillText('🌀', 0, 0);
       ctx.restore();
     }
     if (p.shield && canSeeShield(p)){       // 🛡️ 护盾生效中：仅使用者可见（左上角）
-      ctx.font=(CELL*0.42)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.font=Math.floor(CELL*0.42)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
       ctx.fillText('🛡️', X-CELL*0.28, Y-CELL*0.28);
     }
     if (isSyncMode()){                     // 操作点气泡：3格，亮=可用；攒点中变金色
@@ -1923,7 +1942,7 @@ function draw(now){
         ctx.strokeStyle='#fdca00'; ctx.lineWidth=2.5;
         const X=px(f.x)+CELL/2, Y=px(f.y)+CELL/2;
         ctx.beginPath(); ctx.arc(X, Y, CELL*(0.15+0.65*t), 0, 7); ctx.stroke();
-        ctx.font=(CELL*0.5)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.font=Math.floor(CELL*0.5)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
         ctx.globalAlpha=1-t; ctx.fillText('✨', X, Y);
         ctx.restore();
       }
@@ -1931,16 +1950,16 @@ function draw(now){
       const t=(now-f.t0)/1200;
       const X=px(f.x)+CELL/2, Y=px(f.y)+CELL/2;
       if (t<0.35){
-        ctx.font=(CELL*0.52)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.font=Math.floor(CELL*0.52)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
         ctx.fillText('🎁', X+Math.sin(t/0.35*Math.PI*6)*CELL*0.09, Y+2);
       }else{
         const u=(t-0.35)/0.65;
         ctx.save();
         ctx.globalAlpha=(1-u)*0.85;
-        ctx.font=(CELL*0.5)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.font=Math.floor(CELL*0.5)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
         ctx.fillText('📦', X, Y-CELL*0.55*u-2);
         ctx.globalAlpha=Math.min(1,u*3);
-        ctx.font=(CELL*(0.45+0.4*Math.sin(Math.min(1,u)*Math.PI)))+'px serif';
+        ctx.font=Math.floor(CELL*(0.45+0.4*Math.sin(Math.min(1,u)*Math.PI)))+'px serif';
         ctx.fillText((ITEMS[f.i]||{icon:'🎁'}).icon, X, Y+2-CELL*0.12*u);
         ctx.strokeStyle='#fdca00'; ctx.lineWidth=2.5; ctx.globalAlpha=(1-u)*0.8;
         ctx.beginPath(); ctx.arc(X, Y, CELL*(0.25+0.75*u), 0, 7); ctx.stroke();
@@ -1956,7 +1975,7 @@ function draw(now){
         ctx.beginPath(); ctx.arc(X, Y, CELL*(0.12+0.42*t), 0, 7); ctx.fill();
         ctx.strokeStyle='#8a6bff'; ctx.lineWidth=3;
         ctx.beginPath(); ctx.arc(X, Y, CELL*(0.2+0.62*t), 0, 7); ctx.stroke();
-        ctx.font=(CELL*0.5)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.font=Math.floor(CELL*0.5)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
         ctx.globalAlpha=1-t; ctx.fillText('💥', X, Y-CELL*0.3*t);
         ctx.restore();
       }
@@ -1967,7 +1986,7 @@ function draw(now){
         ctx.globalAlpha=t<0.7?1:(1-t)/0.3;
         ctx.translate(px(f.x)+CELL/2, px(f.y)+CELL/2-CELL*0.6*t);
         ctx.rotate(t*Math.PI*2);
-        ctx.font=(CELL*0.55)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.font=Math.floor(CELL*0.55)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
         ctx.fillText(f.icon||'💫', 0, 0);
         ctx.restore();
       }
@@ -1982,7 +2001,7 @@ function draw(now){
         ctx.lineWidth=1.5;
         ctx.beginPath(); ctx.arc(X, Y, CELL*(0.18+0.45*t), 0, 7); ctx.stroke();
         ctx.globalAlpha=t<0.15?t/0.15:(1-t)/0.85;
-        ctx.font=(CELL*0.5)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.font=Math.floor(CELL*0.5)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
         ctx.fillText('🛡️', X, Y-CELL*0.5*t);
         ctx.restore();
       }
@@ -2012,7 +2031,7 @@ function draw(now){
         ctx.save(); ctx.globalAlpha=(1-t)*0.9;
         ctx.strokeStyle='#7fd8ff'; ctx.lineWidth=3;
         ctx.beginPath(); ctx.arc(px(f.x)+CELL/2, px(f.y)+CELL/2, CELL*(0.2+0.5*t), 0, 7); ctx.stroke();
-        ctx.font=(CELL*0.5)+'px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.font=Math.floor(CELL*0.5)+'px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
         ctx.globalAlpha=1-t; ctx.fillText('❄️', px(f.x)+CELL/2, px(f.y)+CELL/2);
         ctx.restore();
       }
@@ -2034,7 +2053,7 @@ function draw(now){
           ctx.globalAlpha=(1-t)*0.85;
           ctx.strokeStyle='#8a6bff'; ctx.lineWidth=3;
           ctx.beginPath(); ctx.arc(X, Y, CELL*(0.5-0.3*t), 0, 7); ctx.stroke();
-          ctx.font=(CELL*0.4)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+          ctx.font=Math.floor(CELL*0.4)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
           ctx.fillText('✨', X, Y);
         }else{                              // 塌陷：黑洞张口
           const gr=Math.min(1, t*2.5);
@@ -2078,7 +2097,7 @@ function draw(now){
           ctx.strokeStyle='#dff4ff'; ctx.lineWidth=3;
           ctx.strokeRect(px(f.x), px(f.y), CELL*f.w, CELL*f.w);
           ctx.globalAlpha=t<0.5?1:(1-t)/0.5;
-          ctx.font=(CELL*1.3)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+          ctx.font=Math.floor(CELL*1.3)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
           ctx.fillText('⚡', px(f.x)+CELL*f.w/2, px(f.y)+CELL*f.w/2);
           ctx.restore();
         }else if (f.kind==='sun'){                  // ☀️ 烈阳：橙光罩顶
@@ -2087,7 +2106,7 @@ function draw(now){
           og.addColorStop(0,'rgba(255,157,61,.5)'); og.addColorStop(1,'rgba(255,157,61,0)');
           ctx.globalAlpha=1-t; ctx.fillStyle=og; ctx.fillRect(0,0,boardPx,boardPx);
           ctx.globalAlpha=t<0.5?1:(1-t)/0.5;
-          ctx.font=(CELL*1.2)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+          ctx.font=Math.floor(CELL*1.2)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
           ctx.fillText('☀️', boardPx/2, CELL*0.9);
           ctx.restore();
         }else if (f.kind==='bang'){                 // 💥 大爆炸：白闪 + 冲击环
@@ -2096,7 +2115,7 @@ function draw(now){
           ctx.globalAlpha=1-t;
           ctx.strokeStyle='#ffc478'; ctx.lineWidth=5+9*(1-t);
           ctx.beginPath(); ctx.arc(boardPx/2, boardPx/2, 20+t*boardPx*0.85, 0, 7); ctx.stroke();
-          if (t<0.5){ ctx.font=(CELL*1.3)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText('💥', boardPx/2, boardPx/2); }
+          if (t<0.5){ ctx.font=Math.floor(CELL*1.3)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText('💥', boardPx/2, boardPx/2); }
           ctx.restore();
         }
       }

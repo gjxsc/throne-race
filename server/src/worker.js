@@ -112,6 +112,7 @@ export class Room {
           skillMax: [1, 3, 5, 10].includes(s.skillMax) ? s.skillMax : 1,
           disasters: s.disasters !== false,
           disasterInterval: [3, 10, 20].includes(s.disasterInterval) ? s.disasterInterval : 3,
+          level: [0, 1, 2, 3].includes(s.level) ? s.level : 0,   // 关卡地形（0=草原 1=沙漠 2=冰雪 3=熔岩）
         };
         this.status = 'playing';
         this.broadcast({ t: 'start', settings, seats: this.roster() });

@@ -184,6 +184,13 @@
         <option value="online">🌐 在线 · 好友联机</option>
       </select>
       <div style="height:8px"></div>
+      <select id="campSel">
+        <option value="free" selected>🗺️ 自由探索 · 关卡任选</option>
+        <option value="camp">🏁 闯关模式 · 逐关解锁</option>
+      </select>
+      <div style="height:8px"></div>
+      <select id="levelSel"></select>
+      <div style="height:8px"></div>
       <select id="sizeSel">
         <option value="9">地图 9×9 · 紧凑</option>
         <option value="11" selected>地图 11×11 · 标准</option>
@@ -277,6 +284,19 @@ const SKILLS = [
   {id:'sprint',    icon:'🏃', name:'疾跑',     target:null,   desc:'本回合可行动 2 次（同步模式 +2 操作点）'},
 ];
 const INV_CAP = 2;   // 道具箱容量
+/* ---- 关卡配置：特殊格数量为 11×11 基准值，实际按棋盘面积缩放（lvlCount） ---- */
+const LEVELS = [
+  {id:'grass', icon:'🟩', name:'草原竞技场', diff:1, desc:'经典规则，纯抢座对决'},
+  {id:'desert',icon:'🏜️', name:'沙漠遗迹',  diff:2, desc:'石柱阻挡去路，流沙吞没停留者',
+   pillars:16, quicksand:5},
+  {id:'ice',   icon:'❄️', name:'冰雪峡谷',  diff:3, desc:'冰面一路滑行，裂冰踩两次即塌',
+   iceBands:4, crack:6},
+  {id:'lava',  icon:'🌋', name:'熔岩天城',  diff:4, desc:'熔岩烫回出生点，浮桥定期变位，踩机关熄灭熔岩方可登座',
+   lava:12, bridges:3, switchN:2, bridgeEvery:4},
+];
+function lvlCount(base){   // 关卡特殊格数量：以 11×11（121 格）为基准随面积缩放，至少 1 个
+  return Math.max(1, Math.round(base * N * N / 121));
+}
 /* ---- 道具表（宝箱随机开出；stun 开箱即触发不进箱） ---- */
 const ITEMS = {
   wall:     {icon:'🧱', name:'城墙',       desc:'点击立即 +1 堵墙'},
@@ -299,6 +319,15 @@ let itemsOn = false, itemInterval = 5, itemClock = 0;   // 道具系统：定时
 let disastersOn = true, disasterInterval = 3;     // 天灾系统：每 N 回合降下随机场地天灾
 let nextDisaster = 'acid';                        // 预告：下一场天灾种类（触发后立即重掷，棋盘顶部倒计时展示）
 let collapsed = [], fireWalls = [];             // 地陷：塌陷格 {x,y,end} / 烈阳：火墙 {kind,x,y,end}（end=到期回合数）
+let levelId = 0;                                // 当前关卡（LEVELS 下标；0=草原竞技场）
+let campaignOn = false;                         // 🏁 闯关模式：逐关解锁（自由探索=任选）
+let campaignProg = 0;                           // 闯关进度：已解锁的最高关下标（localStorage 持久化）
+try{ campaignProg = Math.min(3, Math.max(0, +localStorage.getItem('tr_campaign')||0)); }catch(e){}
+let pillars = [];                               // 🏛️ 沙漠石柱：{x,y} 永久阻挡
+let quicksand = [];                             // ⏳ 沙漠流沙：{x,y}（停留计数挂在玩家身上）
+let iceCells = [], crackCells = [];             // 🧊 冰雪：冰面 {x,y} / 裂冰 {x,y,cracked}
+let lavaCells = [], bridgeWalls = [], switchCells = [];  // 🌋 熔岩 {x,y} / 🌉 浮桥 {kind,x,y} / 🔆 机关 {x,y}
+let lavaOffUntil = 0;                           // 🔆 熔岩熄灭到期回合（0=燃烧中；机关触发后限时熄灭）
 let skillsOn = true, skillMax = 1;                // 技能系统开关 / 每人每局技能可用次数
 let pendingSkill = null, pendingItem = null;    // 目标选择中：待确认的技能/道具
 let skArming = null;                            // 左栏技能卡二次确认中：确认发起者的颜色
@@ -332,6 +361,7 @@ if (Q.get('mode')) mode = Q.get('mode');
 const qw = +Q.get('walls');
 if (Q.get('walls') && qw>=1) wallStock = Math.min(20, qw);
 if (Q.get('size')){ const n=+Q.get('size'); if([9,11,13,15].includes(n)) setBoardSize(n); }
+if (Q.get('level')!==null){ const lv=+Q.get('level'); if([0,1,2,3].includes(lv)) levelId=lv; }
 if (Q.get('item')){ const v=+Q.get('item'); if([3,5,7,10].includes(v)){ itemsOn=true; itemInterval=v; } }
 if (Q.get('skill')==='0'){ skillsOn = false; } else if (Q.get('skill')){ const sm=+Q.get('skill'); if([1,3,5,10].includes(sm)){ skillMax=sm; } }
 if (Q.get('disaster')==='0'){ disastersOn = false; } else if (Q.get('disaster')){ const di=+Q.get('disaster'); if([3,10,20].includes(di)){ disasterInterval=di; } }
@@ -354,6 +384,7 @@ function beep(freq, dur, type, gain, slide){
 }
 const sMove=()=>beep(320,.07,'triangle',.09,-90);
 const sJump=()=>beep(420,.1,'triangle',.1,180);
+const sSlide=()=>{ beep(430,.05,'sine',.09,140); setTimeout(()=>beep(600,.09,'sine',.08,180),45); };   // 🧊 冰面滑行
 const sWall=()=>{ beep(130,.14,'square',.09,-50); beep(85,.2,'sine',.12,-30); };
 const sBad =()=>beep(150,.12,'sawtooth',.06,-70);
 const sSmash=()=>{ beep(200,.08,'square',.1,-120); beep(70,.25,'sine',.16,-30); };
@@ -374,21 +405,27 @@ function blocked(x1,y1,x2,y2){
 function pawnAt(x,y){ return players.find(p=>!p.left && p.cell.x===x && p.cell.y===y); }
 function cur(){ return players[turnIdx]; }
 
-function bfsFromThrone(wH, wV){
+function bfsFromThrone(wH, wV, avoidLava){
   const reach = new Uint8Array(N*N), dist = new Int16Array(N*N).fill(-1);
   const q=[[THRONE.x,THRONE.y]]; const si=THRONE.y*N+THRONE.x;
   reach[si]=1; dist[si]=0;
+  const lavaSafe = lavaOffUntil > turnCount;   // 🌋 机关熄灭窗口内熔岩可安全通行（否则 AI 寻路避开）
   for(let h=0;h<q.length;h++){
     const [x,y]=q[h], d=dist[y*N+x];
     for(const[dx,dy]of DIRS){
       const nx=x+dx, ny=y+dy;
-      if(!inB(nx,ny) || isCollapsed(nx,ny)) continue;   // 🕳️ 塌陷格视为不可通行（连通性/合法墙位一并感知）
+      if(!inB(nx,ny) || isCollapsed(nx,ny) || isPillar(nx,ny)) continue;   // 🕳️ 塌陷格 / 🏛️ 石柱视为不可通行（连通性/合法墙位一并感知）
+      if (avoidLava && !lavaSafe && isLava(nx,ny)) continue;               // 🌋 避熔岩场：燃烧中的熔岩不入图（连通性场仍可踩，防放墙被误拒）
       if (dx===1)  { if (wV.has(K(nx,y))||wV.has(K(nx,y-1))) continue; }
       else if(dx===-1){ if (wV.has(K(x,y))||wV.has(K(x,y-1))) continue; }
       else if(dy===1) { if (wH.has(K(x,ny))||wH.has(K(x-1,ny))) continue; }
       else            { if (wH.has(K(x,y))||wH.has(K(x-1,y))) continue; }
-      const i=ny*N+nx;
-      if(!reach[i]){ reach[i]=1; dist[i]=d+1; q.push([nx,ny]); }
+      // 🧊 冰面感知：邻居是冰则实际会滑到停稳落点（一次滑行仍算 1 步；棋子不算阻挡，与 BFS 既有近似一致）
+      let mx=nx, my=ny;
+      if (isIce(nx,ny)){ const s = slideFrom(x,y,dx,dy,wH,wV,true); if (s){ mx=s.x; my=s.y; } }
+      if (avoidLava && !lavaSafe && isLava(mx,my)) continue;               // 🌋 滑行落点在熔岩上同样烫回，一并避开
+      const i=my*N+mx;
+      if(!reach[i]){ reach[i]=1; dist[i]=d+1; q.push([mx,my]); }
     }
   }
   return {reach, dist};
@@ -398,8 +435,13 @@ function everyoneHasPath(wH, wV){
   return players.every(p=>p.left || reach[p.cell.y*N+p.cell.x]);
 }
 function allDists(wH, wV){
-  const {dist} = bfsFromThrone(wH||wallsH, wV||wallsV);
-  const m={}; for(const p of players) if(!p.left) m[p.color]=dist[p.cell.y*N+p.cell.x];
+  const d1 = bfsFromThrone(wH||wallsH, wV||wallsV, true).dist;   // 🌋 首选避熔岩场：AI 行军/面板距离按"不踩熔岩"计
+  const m={}; let stuck=false;
+  for(const p of players) if(!p.left){ const d=d1[p.cell.y*N+p.cell.x]; if(d>=0) m[p.color]=d; else stuck=true; }
+  if (stuck){                                                    // 无绕路者回退物理场（熔岩当普通格）：烫回也比卡死强
+    const d2 = bfsFromThrone(wH||wallsH, wV||wallsV).dist;
+    for(const p of players) if(!p.left && m[p.color]===undefined) m[p.color]=d2[p.cell.y*N+p.cell.x];
+  }
   return m;
 }
 
@@ -407,12 +449,19 @@ function legalMoves(p){
   const res=[]; const {x,y}=p.cell;
   for(const[dx,dy]of DIRS){
     const nx=x+dx, ny=y+dy;
-    if(!inB(nx,ny)||blocked(x,y,nx,ny)||isCollapsed(nx,ny)) continue;
+    if(!inB(nx,ny)||blocked(x,y,nx,ny)||isCollapsed(nx,ny)||isPillar(nx,ny)) continue;
     const occ = pawnAt(nx,ny);
-    if(!occ) res.push({x:nx,y:ny});
+    if(!occ){
+      if (isIce(nx,ny)){                    // 🧊 冰面：不能停步，一路滑到停稳落点（doMove/AI/无路判定自动感知）
+        const s = slideFrom(x,y,dx,dy,wallsH,wallsV,false);
+        if (s) res.push({x:s.x, y:s.y, slide:true, via:{x:nx,y:ny}});
+        continue;
+      }
+      res.push({x:nx,y:ny});
+    }
     else{
       const jx=nx+dx, jy=ny+dy;   // 直线跳过贴脸棋子
-      if(inB(jx,jy)&&!blocked(nx,ny,jx,jy)&&!pawnAt(jx,jy)&&!isCollapsed(jx,jy)) res.push({x:jx,y:jy});
+      if(inB(jx,jy)&&!blocked(nx,ny,jx,jy)&&!pawnAt(jx,jy)&&!isCollapsed(jx,jy)&&!isPillar(jx,jy)) res.push({x:jx,y:jy});
     }
   }
   return res;
@@ -452,6 +501,75 @@ function hasAnyAction(p){
 }
 
 /* ================= 开局 ================= */
+/* ---- 关卡地形生成：数量按 N 缩放（lvlCount），避开王座/出生点及其邻格，互不重叠 ---- */
+function lvlTake(taken){          // 随机取一个可用格：不占王座、不在任何出生点或其上下左右邻格
+  for(let t=0;t<400;t++){
+    const x=Math.floor(rnd()*N), y=Math.floor(rnd()*N);
+    if (x===THRONE.x && y===THRONE.y) continue;
+    if (taken.has(x+','+y)) continue;
+    let near=false;
+    for(const c in SPAWN){ const s=SPAWN[c]; if ((s.x===x&&s.y===y) || Math.abs(s.x-x)+Math.abs(s.y-y)===1){ near=true; break; } }
+    if (near) continue;
+    taken.add(x+','+y); return {x,y};
+  }
+  return null;
+}
+function generateLevel(){
+  pillars=[]; quicksand=[]; iceCells=[]; crackCells=[];
+  lavaCells=[]; bridgeWalls=[]; switchCells=[]; lavaOffUntil=0;
+  const L = LEVELS[levelId];
+  if (!L || levelId===0) return;   // 第 1 关：无特殊地形
+  const taken = new Set();
+  // 各关特殊格生成（石柱需复验连通性 everyoneHasPath，不通则减柱重试）
+  if (levelId===1){                     // 🏜️ 沙漠遗迹：石柱逐根放置复验连通性（断路即撤回换位）+ 流沙散布
+    let want = lvlCount(L.pillars), fail = 0;
+    while (pillars.length < want && fail < want*6){
+      const c = lvlTake(taken);
+      if (!c) break;                                            // 棋盘太小已无可放格
+      pillars.push(c);
+      if (everyoneHasPath(wallsH, wallsV)) continue;            // 人人有路：这根石柱成立
+      pillars.pop(); taken.delete(K(c.x,c.y)); fail++;          // 挡断了路：撤回换格重试
+    }
+    for(let i=0;i<lvlCount(L.quicksand);i++){ const c=lvlTake(taken); if (c) quicksand.push(c); }
+  }
+  if (levelId===2){                     // ❄️ 冰雪峡谷：整行/整列冰带（穿越峡谷的冰河）+ 裂冰散布
+    // 冰带不压王座行/列（否则顺带滑进王座=白给）、不贴最外圈；带上的出生点及其邻格凿孔留正常地面
+    const nearSpawn=(x,y)=>{ for(const c in SPAWN){ const s=SPAWN[c]; if ((s.x===x&&s.y===y)||Math.abs(s.x-x)+Math.abs(s.y-y)===1) return true; } return false; };
+    const usedLines=[];
+    const want = Math.min(lvlCount(L.iceBands), Math.max(2, Math.floor(N*0.4)));
+    for(let b=0;b<want;b++){
+      const horiz = b%2===0;            // 横竖交替铺开，冰河均匀贯穿
+      for(let t=0;t<40;t++){
+        const li = 1+Math.floor(rnd()*(N-2));
+        const key = (horiz?'h':'v')+li;
+        if (usedLines.includes(key) || li===THRONE[horiz?'y':'x']) continue;
+        usedLines.push(key);
+        for(let k=0;k<N;k++){
+          const x = horiz?k:li, y = horiz?li:k;
+          if (x===THRONE.x&&y===THRONE.y) continue;
+          if (nearSpawn(x,y) || taken.has(K(x,y))) continue;   // 出生邻格凿孔；两带交叉处留孔（滑行会停下，天然路障）
+          iceCells.push({x,y}); taken.add(K(x,y));
+        }
+        break;
+      }
+    }
+    for(let i=0;i<lvlCount(L.crack);i++){ const c=lvlTake(taken); if (c) crackCells.push({x:c.x, y:c.y, cracked:false}); }
+  }
+  if (levelId===3){                     // 🌋 熔岩天城：熔岩/机关散布（可通行，不走连通性复验）+ 浮桥按放墙同款标准落位
+    for(let i=0;i<lvlCount(L.lava);i++){ const c=lvlTake(taken); if (c) lavaCells.push(c); }
+    for(let i=0;i<lvlCount(L.switchN);i++){ const c=lvlTake(taken); if (c) switchCells.push(c); }
+    const want = lvlCount(L.bridges);
+    let fail = 0;
+    while (bridgeWalls.length < want && fail < want*60){
+      fail++;
+      const kind = rnd()<0.5?'h':'v';
+      const x = Math.floor(rnd()*N), y = Math.floor(rnd()*N);
+      if (!wallOK(kind,x,y)) continue;                        // 墙位合法 + 人人有路（与玩家放墙同一标准）
+      (kind==='h'?wallsH:wallsV).add(K(x,y));
+      bridgeWalls.push({kind, x, y});
+    }
+  }
+}
 function newGame(){
   clearTimeout(aiTimer);
   wallsH.clear(); wallsV.clear(); wallOwner = {};
@@ -468,6 +586,7 @@ function newGame(){
       frozenTurns:0, frozenUntil:0, extraActs:0, paint:null,
       shield:false,
       rainBoost:false,                            // 🌧️ 暴雨加成：本回合多一次行动（同步模式=下一步不耗操作点）
+      qsTurns:0,                                  // ⏳ 流沙：连续停留到自己回合的计数（满 2 被吞没）
     };
   });
   turnIdx = Math.floor(rnd()*4);
@@ -475,6 +594,7 @@ function newGame(){
   THRONE.x = THRONE.y = (N-1)/2;         // 王座复位正中（上一局可能被 👑 技能搬走）
   itemClock = 0; boxes = []; traps = [];
   collapsed = []; fireWalls = [];            // 天灾残留清空
+  generateLevel();                           // 关卡地形（随当前关卡与棋盘尺寸生成）
   nextDisaster = rollDisaster();             // 重新预告下一场天灾
   logLines = [];
   logAppend('🏁 新对局开始，抢座大战一触即发', null);
@@ -600,18 +720,19 @@ function doMove(p, cell){
     }                                     // 镜像格不可走：仍按原方向走（混乱落空），避免卡死
   }
   const jump = Math.abs(p.cell.x-cell.x)+Math.abs(p.cell.y-cell.y) > 1;
+  const slide = !!cell.slide;
   p.tween = {fx:p.cell.x, fy:p.cell.y, t0:performance.now()};
   p.cell = {x:cell.x, y:cell.y};
   passStreak = 0; turnCount++;
-  netEv({type:'move', color:p.color, jump});
-  logPush(jump?'跳过一个棋子 →('+cell.x+','+cell.y+')':'走一步 →('+cell.x+','+cell.y+')', p.color);
-  jump ? sJump() : sMove();
+  netEv({type:'move', color:p.color, jump, slide});
+  logPush(slide ? '🧊 顺冰面一路滑行 →('+cell.x+','+cell.y+')' : (jump?'跳过一个棋子 →('+cell.x+','+cell.y+')':'走一步 →('+cell.x+','+cell.y+')'), p.color);
+  slide ? sSlide() : jump ? sJump() : sMove();
   if (cell.x===THRONE.x && cell.y===THRONE.y){ endGame(p); return; }
   afterStep(p, cell);                    // 落格结算：陷阱 → 宝箱（传送类技能不经过这里，天然不触发）
   if (isSyncMode()){
     if (p.rainBoost){ p.rainBoost=false; toast('🌧️ 暴雨冲刺：本次行动不耗操作点'); }
     else spendAP(p);
-    expireDisasters(); maybeDisaster();
+    expireDisasters(); bridgesTick(); maybeDisaster();
     renderPanel();
     return;
   }
@@ -642,7 +763,7 @@ const cheb = (x,y,c) => Math.max(Math.abs(x-c.x), Math.abs(y-c.y));
 function randCell(filter){                     // 随机空格（不在王座上，可附加过滤条件）
   const cands=[];
   for(let y=0;y<N;y++) for(let x=0;x<N;x++)
-    if (!pawnAt(x,y) && !isCollapsed(x,y) && !(x===THRONE.x&&y===THRONE.y) && (!filter||filter(x,y))) cands.push({x,y});
+    if (!pawnAt(x,y) && !isCollapsed(x,y) && !isPillar(x,y) && !(x===THRONE.x&&y===THRONE.y) && (!filter||filter(x,y))) cands.push({x,y});
   return cands.length? cands[Math.floor(rnd()*cands.length)] : null;
 }
 function throneMovable(x,y){                   // 王座迁到 (x,y) 是否人人仍有路（临时换座验证）
@@ -681,7 +802,7 @@ function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=�
       done = true; break; }
     case 'phase': {                            // 👻 穿过身边一堵墙，落到另一侧空格
       const nx=p.cell.x+t.dx, ny=p.cell.y+t.dy;
-      if (!inB(nx,ny) || isCollapsed(nx,ny) || pawnAt(nx,ny) || !blocked(p.cell.x,p.cell.y,nx,ny)) return false;
+      if (!inB(nx,ny) || isCollapsed(nx,ny) || isPillar(nx,ny) || pawnAt(nx,ny) || !blocked(p.cell.x,p.cell.y,nx,ny)) return false;
       teleport(p, {x:nx,y:ny}); sJump();
       netEv({type:'skill', fx:'jump'}); done = true;
       if (p.cell.x===THRONE.x && p.cell.y===THRONE.y){   // 穿墙直达王座：直接获胜
@@ -775,7 +896,41 @@ const DISASTERS = {
   sun:    {icon:'☀️', name:'烈阳'},
   bang:   {icon:'💥', name:'大爆炸'},
 };
+/* ☄️ 天灾专属皮肤：同一机制在各关卡换主题（名称/图标/雨丝色），默认关沿用上表 */
+const DISASTER_SKINS = {
+  1: {acid:{icon:'🏜️',name:'沙尘暴',color:'#d9b36c'}, thunder:{icon:'🌩️',name:'沙暴雷'}, sink:{icon:'🕳️',name:'沙坑塌陷'}, rain:{icon:'💧',name:'绿洲洪流',color:'#6fd8c8'}, sun:{icon:'🌞',name:'酷暑'}, bang:{icon:'💥',name:'圣殿崩塌'}},
+  2: {acid:{icon:'🌨️',name:'冻雨',color:'#a8e6ff'}, thunder:{icon:'⚡',name:'白色雷暴'}, sink:{icon:'🕳️',name:'雪窟'}, rain:{icon:'❄️',name:'暴风雪',color:'#e8f4ff'}, sun:{icon:'☀️',name:'融雪烈日'}, bang:{icon:'💥',name:'雪崩'}},
+  3: {acid:{icon:'🔥',name:'灰烬雨',color:'#ff9a5a'}, thunder:{icon:'🌩️',name:'火山雷'}, sink:{icon:'🕳️',name:'熔岩地裂'}, rain:{icon:'♨️',name:'蒸汽弥漫',color:'#cfd8dc'}, sun:{icon:'🌡️',name:'热浪'}, bang:{icon:'💥',name:'火山喷发'}},
+};
+const DISASTER_W = {                              // ☄️ 各关天灾权重：沙漠重酷暑塌陷 / 冰雪重冻雨暴雪 / 熔岩重热浪喷发
+  0: {acid:1,   thunder:1,   sink:1,   rain:1,   sun:1,   bang:0.35},
+  1: {acid:1.2, thunder:0.6, sink:1.4, rain:0.3, sun:1.4, bang:0.4},
+  2: {acid:1.5, thunder:1.2, sink:1,   rain:1.5, sun:0.4, bang:0.5},
+  3: {acid:1,   thunder:0.8, sink:1.2, rain:0.3, sun:1.5, bang:0.8},
+};
+function disasterInfo(kind){ return (DISASTER_SKINS[levelId]||{})[kind] || DISASTERS[kind]; }
 function isCollapsed(x,y){ return collapsed.some(c=>c.x===x&&c.y===y); }
+function isPillar(x,y){ return pillars.some(c=>c.x===x&&c.y===y); }   // 🏛️ 沙漠石柱：永久阻挡（等同塌陷格但永不恢复）
+function isIce(x,y){ return iceCells.some(c=>c.x===x&&c.y===y); }     // 🧊 冰雪：冰面（可通行，踩上去一路滑行）
+function isLava(x,y){ return lavaCells.some(c=>c.x===x&&c.y===y); }  // 🌋 熔岩：可通行，踩中燃烧中的熔岩被烫回出生点
+/* 🧊 冰面滑行：第一步 (x+dx,y+dy) 的墙/阻挡已由调用方验证后，沿方向一路滑到停稳落点。
+   撞边界/墙/棋子/塌陷/石柱 → 停在其前一格；滑出冰面 → 停在首块非冰格（可以是王座/裂冰/流沙/宝箱格）。
+   noPawns=true 供 BFS 连通性使用（棋子会动，不能算死阻挡） */
+function slideFrom(x,y,dx,dy,wH,wV,noPawns){
+  let cx=x+dx, cy=y+dy;
+  for(;;){
+    const nx=cx+dx, ny=cy+dy;
+    if (!inB(nx,ny)) return {x:cx,y:cy};
+    if (dx===1)  { if (wV.has(K(nx,cy)) || wV.has(K(nx,cy-1))) return {x:cx,y:cy}; }
+    else if(dx===-1){ if (wV.has(K(cx,cy)) || wV.has(K(cx,cy-1))) return {x:cx,y:cy}; }
+    else if(dy===1) { if (wH.has(K(cx,ny)) || wH.has(K(cx-1,ny))) return {x:cx,y:cy}; }
+    else            { if (wH.has(K(cx,cy)) || wH.has(K(cx-1,cy))) return {x:cx,y:cy}; }
+    if (isCollapsed(nx,ny) || isPillar(nx,ny)) return {x:cx,y:cy};
+    if (!noPawns && pawnAt(nx,ny)) return {x:cx,y:cy};
+    cx=nx; cy=ny;
+    if (!isIce(cx,cy)) return {x:cx,y:cy};
+  }
+}
 function shuffleArr(a){                     // 天灾专用洗牌（走 rnd() 种子随机）
   for(let i=a.length-1;i>0;i--){ const j=Math.floor(rnd()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
   return a;
@@ -800,8 +955,44 @@ function expireDisasters(){                 // 天灾到期结算（仅主机/�
     logPush('🕳️ '+cOut.length+' 个塌陷格恢复如初', null);
   }
 }
-function rollDisaster(){                     // 按权重随机决定天灾种类（💥 大爆炸权重调低，≈6%）
-  const DW = {acid:1, thunder:1, sink:1, rain:1, sun:1, bang:0.35};
+function bridgesTick(){                 // 🌋 熔岩天城周期结算：熔岩重燃（重燃时站在熔岩上的人被烫回）+ 浮桥定期变位
+  if (!hostSim() || winner || levelId!==3) return;
+  if (lavaOffUntil && lavaOffUntil<=turnCount){
+    lavaOffUntil = 0;
+    logPush('🌋 熔岩重新燃烧！', null);
+    for (const q of players){
+      if (q.left || !isLava(q.cell.x, q.cell.y)) continue;
+      const hx=q.cell.x, hy=q.cell.y;
+      fx.push({type:'lavahit', x:hx, y:hy, t0:performance.now()});
+      sBad();
+      spawnDrop(q);
+      netEv({type:'lavahit', color:q.color, x:hx, y:hy});
+      logPush('🌋 '+COLORS[q.color].name+' 站在熔岩里被烫回出生点！', q.color);
+    }
+  }
+  const every = isSyncMode() ? LEVELS[3].bridgeEvery*4 : LEVELS[3].bridgeEvery;   // 同步模式 turnCount 按行动计，×4 对齐回合
+  if (!bridgeWalls.length || turnCount===0 || turnCount % every !== 0) return;
+  for (const b of bridgeWalls) removeWall(b.kind, b.x, b.y);       // 先全部拆走再逐座找新位（新位间互不冲突）
+  const spots=[];
+  for(let y=1;y<N;y++) for(let x=0;x<N-1;x++) spots.push(['h',x,y]);
+  for(let y=0;y<N-1;y++) for(let x=1;x<N;x++) spots.push(['v',x,y]);
+  shuffleArr(spots);
+  const next = [];
+  for (const b of bridgeWalls){
+    for (const [k,x,y] of spots){
+      if (!wallOK(k,x,y)) continue;                                // 连通性复验：任何一座都不能把人困死
+      (k==='h'?wallsH:wallsV).add(K(x,y));
+      next.push({kind:k, x, y});
+      break;
+    }
+  }
+  bridgeWalls = next;
+  sWall();
+  netEv({type:'bridgemove'});
+  logPush('🌉 浮桥变位，通路重新洗牌', null);
+}
+function rollDisaster(){                     // 按权重随机决定天灾种类（权重随关卡皮肤侧重；💥 大爆炸保持低概率）
+  const DW = DISASTER_W[levelId] || DISASTER_W[0];
   let r = rnd()*Object.values(DW).reduce((a,b)=>a+b,0), kind='acid';
   for (const k in DW){ r -= DW[k]; if (r<0){ kind=k; break; } }
   return kind;
@@ -812,7 +1003,7 @@ function maybeDisaster(){                    // 天灾调度：经典每 N 手 /
   if (turnCount % every !== 0) return;
   const kind = nextDisaster;                 // 降下预告的这场，并立即掷出下一场供顶部倒计时展示
   nextDisaster = rollDisaster();
-  const D = DISASTERS[kind];
+  const D = disasterInfo(kind);
   logPush(D.icon+' 天灾降临：'+D.name, null);
   const extra = ({acid:disasterAcid, thunder:disasterThunder, sink:disasterSink,
                   rain:disasterRain, sun:disasterSun, bang:disasterBang})[kind]() || {};
@@ -851,7 +1042,7 @@ function spawnDrop(p){                       // 掉回出生点（出生点被�
   if (!pawnAt(s.x,s.y) && !isCollapsed(s.x,s.y)){ teleport(p, s); return; }
   let best=null, bd=1e9;
   for(let y=0;y<N;y++) for(let x=0;x<N;x++){
-    if (pawnAt(x,y) || isCollapsed(x,y) || (x===THRONE.x&&y===THRONE.y)) continue;
+    if (pawnAt(x,y) || isCollapsed(x,y) || isPillar(x,y) || (x===THRONE.x&&y===THRONE.y)) continue;
     const d = Math.abs(x-s.x)+Math.abs(y-s.y);
     if (d<bd){ bd=d; best={x,y}; }
   }
@@ -941,18 +1132,32 @@ function disasterBang(){                     // 💥 大爆炸：王座/玩家/�
   logPush('💥 大爆炸！棋盘格局重组（'+walls+'/'+owners.length+' 堵墙幸存）', null);
   return {tx:THRONE.x, ty:THRONE.y};
 }
-function disasterFx(kind, extra){            // 天灾屏幕级特效（本地触发与远端 applyEvent 共用）
-  fx.push({type:'dfx', kind, t0:performance.now(), ...extra});
+function disasterFx(kind, extra){            // 天灾屏幕级特效（本地触发与远端 applyEvent 共用；皮肤雨丝色随创建时烙定）
+  fx.push({type:'dfx', kind, t0:performance.now(), color:disasterInfo(kind).color, ...extra});
 }
 function nextTurn(){
   if (winner) return;
   expireDisasters();                       // 天灾到期结算：地陷恢复 / 火墙熄灭
+  bridgesTick();                           // 🌋 熔岩天城：熔岩重燃 / 浮桥变位
   maybeDisaster();                         // 天灾：每 3 回合降下一次
   cur().extraActs=0;                       // 疾跑加行动只在当回合有效（防 pass 残留）
   turnIdx = (turnIdx+1)%players.length;
   let guard = players.length*2;            // 防多人同时被定身导致死循环
   while (guard-- > 0 && !winner){
     const f = cur();
+    // ⏳ 沙漠流沙：轮到该玩家时仍站在流沙上则计数 +1，连续第 2 个回合开始被吞没掉回出生点（定身同样在陷）
+    if (hostSim() && !winner && !f.left && quicksand.some(q=>q.x===f.cell.x&&q.y===f.cell.y)){
+      f.qsTurns = (f.qsTurns||0)+1;
+      if (f.qsTurns >= 2){
+        f.qsTurns = 0;
+        const qc = {x:f.cell.x, y:f.cell.y};
+        fx.push({type:'sinkhole', x:qc.x, y:qc.y, t0:performance.now()});
+        sSmash();
+        spawnDrop(f);
+        netEv({type:'qsink', color:f.color, x:qc.x, y:qc.y});
+        logPush('⏳ '+COLORS[f.color].name+' 被流沙吞没，掉回出生点', f.color);
+      }else logPush('⏳ '+COLORS[f.color].name+' 陷入流沙（下回合开始前不离开会被吞没）', f.color);
+    }else if (f.qsTurns) f.qsTurns = 0;
     if (f.frozenTurns>0 && !f.left){       // ❄️ 定身 / 💫 眩晕：跳过该回合
       f.frozenTurns--;
       const st = f.stunTag;
@@ -1011,6 +1216,14 @@ function endGame(p){
   winner = p; busy = true;
   netEv({type:'win', color:p.color});
   logPush('👑 踏上王座，获得胜利！', p.color);
+  // 🏁 闯关：真人在「当前进度关」取胜才解锁下一关（在线对局不推进闯关进度）
+  let unlocked = false;
+  if (campaignOn && !isOnline() && !p.ai && levelId===campaignProg && campaignProg < LEVELS.length-1){
+    campaignProg++; unlocked = true;
+    try{ localStorage.setItem('tr_campaign', campaignProg); }catch(e){}
+    refreshLevelSel();
+    logPush('🏁 闯关成功，解锁 '+LEVELS[campaignProg].icon+' 第'+(campaignProg+1)+'关 '+LEVELS[campaignProg].name, p.color);
+  }
   sWin(); spawnConfetti();
   renderPanel();
   const ov=document.getElementById('overlay'), pn=document.getElementById('ovPanel');
@@ -1025,9 +1238,14 @@ function endGame(p){
       ${players.map(q=>`<span style="color:${COLORS[q.color].main}"><i></i>${q.name||COLORS[q.color].name}${q===p?' 👑':''}</span>`).join('')}
     </div>
     <div class="btnrow">${btns}</div>
+    ${unlocked? `<div class="ndim" style="margin-top:8px">🏁 闯关成功！已解锁 ${LEVELS[campaignProg].icon} 第${campaignProg+1}关 ${LEVELS[campaignProg].name}，点「再来一局」继续闯关</div>`:''}
     ${isOnline()&&netWatch?'<div class="ndim" style="margin-top:8px">观战模式 · 5 秒后自动开始下一局</div>':''}`;
   ov.classList.add('show');
-  document.getElementById('btnAgain').onclick = ()=> isOnline()? netStartRound() : newGame();
+  document.getElementById('btnAgain').onclick = ()=>{
+    if (isOnline()){ netStartRound(); return; }
+    if (unlocked){ levelId = campaignProg; refreshLevelSel(); }   // 🏁 闯关：直接进下一关
+    newGame();
+  };
   const bw=document.getElementById('btnWatch'); if (bw) bw.onclick = ()=>{ mode='spectate'; newGame(); };
   const bx=document.getElementById('btnNetExit'); if (bx) bx.onclick = ()=>netLeave();
   if (mode==='spectate' || mode==='syncspec'){
@@ -1117,7 +1335,7 @@ function aiTurn(){
   else if (bestWall) aiAct(p,'wall',bestWall);
 }
 function bestToward(p, ms){
-  const {dist}=bfsFromThrone(wallsH,wallsV);
+  const {dist}=bfsFromThrone(wallsH,wallsV,true);   // 🌋 避熔岩场选路：熔岩格 dist=-1 自动被跳过
   let best=ms[0], bd=1e9;
   for(const c of ms){ const d=dist[c.y*N+c.x]; if(d>=0&&d<bd){bd=d;best=c;} }
   for(const c of ms){ if (boxAt(c.x,c.y) && dist[c.y*N+c.x]===bd) return c; }   // 🎁 同距不绕路：顺路拾箱
@@ -1239,9 +1457,46 @@ function spawnBox(){                      // 每 itemInterval 秒：棋盘随机
   fx.push({type:'boxin', x:c.x, y:c.y, t0:performance.now()});
   netEv({type:'boxspawn', x:c.x, y:c.y});
 }
-function afterStep(p, cell){              // 每次走到新格子（doMove 王座判定后）：先判陷阱，再拾宝箱
+function afterStep(p, cell){              // 每次走到新格子（doMove 王座判定后）：先判陷阱，再拾宝箱，再结算裂冰
   if (triggerTrap(p, cell)) return;
   pickupAt(p, cell);
+  // ❄️ 裂冰：第一次踩出裂纹，再被任何人踩一次即塌陷 2 回合——踩塌者坠入冰窟掉回出生点
+  const cr = crackCells.find(c=>c.x===cell.x&&c.y===cell.y);
+  if (cr){
+    if (!cr.cracked){
+      cr.cracked = true;
+      fx.push({type:'icecrack', x:cell.x, y:cell.y, t0:performance.now()});
+      sBad();
+      netEv({type:'icecrack', x:cell.x, y:cell.y});
+      logPush('❄️ 踩裂了薄冰！再被踩一次就会塌', p.color);
+    }else{
+      crackCells.splice(crackCells.indexOf(cr), 1);
+      collapsed.push({x:cell.x, y:cell.y, end: turnCount+2});
+      fx.push({type:'sinkhole', x:cell.x, y:cell.y, t0:performance.now()});
+      sSmash();
+      spawnDrop(p);
+      netEv({type:'qsink', color:p.color, x:cell.x, y:cell.y});   // 复用吞没事件：远端同款黑洞特效/音效/提示
+      logPush('🧊 踩塌裂冰坠入冰窟！掉回出生点（该格塌陷 2 回合）', p.color);
+    }
+  }
+  // 🔆 机关：踩中熄灭全部熔岩 3 回合（一次性，抓紧窗口登座）
+  const sw = switchCells.find(c=>c.x===cell.x&&c.y===cell.y);
+  if (sw){
+    switchCells.splice(switchCells.indexOf(sw), 1);
+    lavaOffUntil = turnCount + 3;
+    fx.push({type:'switchon', x:cell.x, y:cell.y, t0:performance.now()});
+    sPick();
+    netEv({type:'switchon', x:cell.x, y:cell.y});
+    logPush('🔆 踩中机关！熔岩熄灭 3 回合，抓紧登座', p.color);
+  }
+  // 🌋 熔岩：踩中燃烧中的熔岩被烫回出生点（机关熄灭期间安全通行）
+  else if (lavaOffUntil<=turnCount && isLava(cell.x, cell.y)){
+    fx.push({type:'lavahit', x:cell.x, y:cell.y, t0:performance.now()});
+    sBad();
+    spawnDrop(p);
+    netEv({type:'lavahit', color:p.color, x:cell.x, y:cell.y});
+    logPush('🌋 踩进熔岩，被烫回出生点！', p.color);
+  }
 }
 function pickupAt(p, cell){               // 拾取脚下宝箱：道具箱满则留在原地
   const b = boxAt(cell.x, cell.y);
@@ -1307,7 +1562,7 @@ function triggerTrap(p, cell){            // 踩中陷阱：塌陷特效 + 掉�
 function useTrapItem(p, x, y){            // 埋陷阱：空格、非王座、不与宝箱/已有陷阱重叠
   const i = p.inv.indexOf('trap');
   if (i<0) return false;
-  if (!inB(x,y) || pawnAt(x,y) || (x===THRONE.x&&y===THRONE.y) || trapAt(x,y) || boxAt(x,y)) return false;
+  if (!inB(x,y) || pawnAt(x,y) || (x===THRONE.x&&y===THRONE.y) || trapAt(x,y) || boxAt(x,y) || isPillar(x,y) || isCollapsed(x,y)) return false;
   p.inv.splice(i,1);
   traps.push({x, y, o:p.color});
   sPick(); renderPanel();
@@ -1554,8 +1809,9 @@ function resolveIntent(p, cx, cy){
   const tx=Math.round(cx-0.5), ty=Math.round(cy-0.5);
   if (inB(tx,ty)){
     const ms = legalMoves(p);
-    const hit = ms.find(c=>c.x===tx&&c.y===ty);
-    if (hit) return {type:'move', x:tx, y:ty};
+    let hit = ms.find(c=>c.x===tx&&c.y===ty);
+    if (!hit) hit = ms.find(c=>c.slide && c.via && c.via.x===tx && c.via.y===ty);   // 🧊 点冰面入口格 = 选定这条滑行
+    if (hit) return {type:'move', x:hit.x, y:hit.y, slide:!!hit.slide};
     if (tx===p.cell.x&&ty===p.cell.y){ toast('点相邻格移动，或点格线缝隙放墙'); return null; }
     toast(ms.length ? '走不到那里' : '你被困住了！');
     sBad();
@@ -1563,7 +1819,7 @@ function resolveIntent(p, cx, cy){
   return null;
 }
 function applyIntent(p, a){
-  if (a.type==='move') doMove(p, {x:a.x, y:a.y});
+  if (a.type==='move') doMove(p, {x:a.x, y:a.y, slide:!!a.slide});
   else if (a.type==='wall') doWall(p, a.kind, a.x, a.y);
   else if (a.type==='smash') useHammer(p, a.kind, a.x, a.y);
   else if (a.type==='skilluse') execSkill(p, a.id, a.t);
@@ -1742,6 +1998,113 @@ function draw(now){
   ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillText('👑', px(THRONE.x)+CELL/2, px(THRONE.y)+CELL/2+2);
 
+  // 🏛️ 沙漠石柱：永久阻挡（沙岩底座 + 石柱）
+  for(const c of pillars){
+    const X=px(c.x), Y=px(c.y);
+    ctx.save();
+    const pg = ctx.createLinearGradient(X,Y,X+CELL,Y+CELL);
+    pg.addColorStop(0,'#c9b18a'); pg.addColorStop(1,'#8d7a5c');
+    ctx.fillStyle=pg;
+    rr(X+2.5,Y+2.5,CELL-5,CELL-5, Math.max(4,CELL*0.12)); ctx.fill();
+    ctx.strokeStyle='rgba(58,46,30,.6)'; ctx.lineWidth=1.5;
+    rr(X+2.5,Y+2.5,CELL-5,CELL-5, Math.max(4,CELL*0.12)); ctx.stroke();
+    ctx.globalAlpha=0.92;
+    ctx.font=Math.floor(CELL*0.42)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('🏛️', X+CELL/2, Y+CELL/2+2);
+    ctx.restore();
+  }
+  // ⏳ 沙漠流沙：缓慢旋转的沙涡（可通行，停留 2 回合被吞没）
+  for(const q of quicksand){
+    ctx.save();
+    ctx.translate(px(q.x)+CELL/2, px(q.y)+CELL/2);
+    ctx.rotate(now/1300 + q.x*0.7 + q.y*1.1);
+    ctx.strokeStyle='rgba(214,178,116,.75)'; ctx.lineWidth=Math.max(2,CELL*0.055); ctx.lineCap='round';
+    for(let i=0;i<3;i++){
+      ctx.beginPath();
+      ctx.arc(0,0, CELL*(0.13+i*0.115), i*2.1, i*2.1+1.6);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // 🧊 冰雪冰面：淡蓝镜面高光（可通行，踩上去一路滑行）
+  for(const c of iceCells){
+    const X=px(c.x), Y=px(c.y);
+    ctx.save();
+    const ig = ctx.createLinearGradient(X,Y,X+CELL,Y+CELL);
+    ig.addColorStop(0,'#cfeaff'); ig.addColorStop(1,'#7db8e8');
+    ctx.fillStyle=ig;
+    rr(X+2.5,Y+2.5,CELL-5,CELL-5, Math.max(4,CELL*0.12)); ctx.fill();
+    ctx.strokeStyle='rgba(220,242,255,.55)'; ctx.lineWidth=1.5;
+    rr(X+2.5,Y+2.5,CELL-5,CELL-5, Math.max(4,CELL*0.12)); ctx.stroke();
+    ctx.globalAlpha=0.5+0.2*Math.sin(now/900+c.x+c.y);    // 微微反光流动
+    ctx.font=Math.floor(CELL*0.34)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('❄️', X+CELL/2, Y+CELL/2+2);
+    ctx.restore();
+  }
+  // ❄️ 裂冰：踩一次出裂纹，再被踩一次即塌（已裂状态裂纹更深更粗）
+  for(const c of crackCells){
+    const X=px(c.x), Y=px(c.y);
+    ctx.save();
+    const cg = ctx.createLinearGradient(X,Y,X+CELL,Y+CELL);
+    cg.addColorStop(0,'#bfe8f2'); cg.addColorStop(1,'#6fa8c4');
+    ctx.fillStyle=cg;
+    rr(X+2.5,Y+2.5,CELL-5,CELL-5, Math.max(4,CELL*0.12)); ctx.fill();
+    ctx.strokeStyle=c.cracked?'rgba(25,35,55,.9)':'rgba(70,100,130,.7)';
+    ctx.lineWidth=c.cracked?2.5:1.5;
+    ctx.lineCap='round';
+    const cx2=X+CELL/2, cy2=Y+CELL/2, r=CELL*(c.cracked?0.34:0.26);
+    ctx.beginPath();                                       // 三道锯齿放射裂纹
+    for(let i=0;i<3;i++){
+      const a=i*2.09+0.5;
+      ctx.moveTo(cx2, cy2);
+      ctx.lineTo(cx2+Math.cos(a)*r, cy2+Math.sin(a)*r);
+      ctx.lineTo(cx2+Math.cos(a+0.35)*r*1.35, cy2+Math.sin(a+0.35)*r*1.35);
+    }
+    ctx.stroke();
+    if (c.cracked){                                        // 已裂：醒目警示
+      ctx.globalAlpha=0.9;
+      ctx.font=Math.floor(CELL*0.3)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('⚠️', X+CELL/2, Y+CELL*0.32);
+    }
+    ctx.restore();
+  }
+
+  // 🌋 熔岩：燃烧中红橙滚烫（热浪脉动），机关熄灭期间冷却为暗色
+  const lavaCool = lavaOffUntil>turnCount;
+  for(const c of lavaCells){
+    const X=px(c.x), Y=px(c.y);
+    ctx.save();
+    const lg = ctx.createLinearGradient(X,Y,X+CELL,Y+CELL);
+    if (lavaCool){ lg.addColorStop(0,'#4a3a3a'); lg.addColorStop(1,'#332626'); }
+    else { lg.addColorStop(0,'#ff9a3c'); lg.addColorStop(1,'#c62f0f'); }
+    ctx.fillStyle=lg;
+    rr(X+2.5,Y+2.5,CELL-5,CELL-5, Math.max(4,CELL*0.12)); ctx.fill();
+    if (!lavaCool){                                        // 燃烧中：跳动热浪
+      ctx.globalAlpha=0.30+0.18*Math.sin(now/200+c.x*1.3+c.y*0.9);
+      ctx.fillStyle='#ffd98a';
+      rr(X+2.5,Y+2.5,CELL-5,CELL-5, Math.max(4,CELL*0.12)); ctx.fill();
+      ctx.globalAlpha=1;
+    }
+    ctx.globalAlpha=lavaCool?0.45:0.95;
+    ctx.font=Math.floor(CELL*0.4)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('🌋', X+CELL/2, Y+CELL/2+2);
+    ctx.restore();
+  }
+  // 🔆 机关：金色脉动（踩中熄灭全部熔岩 3 回合）
+  for(const c of switchCells){
+    const X=px(c.x), Y=px(c.y);
+    ctx.save();
+    const sg = ctx.createRadialGradient(X+CELL/2,Y+CELL/2,CELL*0.05,X+CELL/2,Y+CELL/2,CELL*0.6);
+    sg.addColorStop(0,'#ffe9a8'); sg.addColorStop(1,'#8a6a1f');
+    ctx.fillStyle=sg;
+    rr(X+2.5,Y+2.5,CELL-5,CELL-5, Math.max(4,CELL*0.12)); ctx.fill();
+    ctx.globalAlpha=0.75+0.25*Math.sin(now/300+c.x+c.y);
+    ctx.font=Math.floor(CELL*0.42)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('🔆', X+CELL/2, Y+CELL/2+2);
+    ctx.restore();
+  }
+
   // 当前人类玩家合法移动提示
   let cp = null;
   if (!winner){
@@ -1761,14 +2124,16 @@ function draw(now){
   for(const key of wallsH){
     const[a,b]=key.split(',').map(Number);
     const fw = fireWalls.some(q=>q.kind==='h'&&q.x===a&&q.y===b);   // 🔥 烈阳火墙：橙红燃烧
-    const col = fw ? `hsl(${16+9*Math.sin(now/160+a*1.3+b)},100%,${56+9*Math.sin(now/120+a+b)})` : (COLORS[paintOf(wallOwner['h '+key])]?.main || '#7f8db0');
+    const bw = bridgeWalls.some(q=>q.kind==='h'&&q.x===a&&q.y===b); // 🌉 浮桥：亮木色（无主之墙）
+    const col = fw ? `hsl(${16+9*Math.sin(now/160+a*1.3+b)},100%,${56+9*Math.sin(now/120+a+b)})` : (bw ? '#d8a255' : (COLORS[paintOf(wallOwner['h '+key])]?.main || '#7f8db0'));
     ctx.strokeStyle=col; ctx.shadowColor=col; ctx.shadowBlur= fw ? 16+8*Math.sin(now/110+a+b) : 7;
     ctx.beginPath(); ctx.moveTo(px(a),px(b)); ctx.lineTo(px(a+2),px(b)); ctx.stroke();
   }
   for(const key of wallsV){
     const[a,b]=key.split(',').map(Number);
     const fw = fireWalls.some(q=>q.kind==='v'&&q.x===a&&q.y===b);   // 🔥 烈阳火墙：橙红燃烧
-    const col = fw ? `hsl(${16+9*Math.sin(now/160+a+b*1.3)},100%,${56+9*Math.sin(now/120+a*b)})` : (COLORS[paintOf(wallOwner['v '+key])]?.main || '#7f8db0');
+    const bw = bridgeWalls.some(q=>q.kind==='v'&&q.x===a&&q.y===b); // 🌉 浮桥：亮木色（无主之墙）
+    const col = fw ? `hsl(${16+9*Math.sin(now/160+a+b*1.3)},100%,${56+9*Math.sin(now/120+a*b)})` : (bw ? '#d8a255' : (COLORS[paintOf(wallOwner['v '+key])]?.main || '#7f8db0'));
     ctx.strokeStyle=col; ctx.shadowColor=col; ctx.shadowBlur= fw ? 16+8*Math.sin(now/110+a*b) : 7;
     ctx.beginPath(); ctx.moveTo(px(a),px(b)); ctx.lineTo(px(a),px(b+2)); ctx.stroke();
   }
@@ -1970,7 +2335,7 @@ function draw(now){
   }
 
   // 特效（openbox 开箱动画较长，单独放宽）
-  fx = fx.filter(f=>now-f.t0 < (f.type==='openbox'?1200:((f.type==='trapgo'||f.type==='stun'||f.type==='shieldpop'||f.type==='sinkhole')?900:(f.type==='dfx'?1100:500))));
+  fx = fx.filter(f=>now-f.t0 < (f.type==='openbox'?1200:((f.type==='trapgo'||f.type==='stun'||f.type==='shieldpop'||f.type==='sinkhole'||f.type==='icecrack'||f.type==='lavahit'||f.type==='switchon')?900:(f.type==='dfx'?1100:500))));
   for(const f of fx){
     if (f.type==='boxin'){                // 🎁 宝箱刷新：金色闪现
       const t=(now-f.t0)/450;
@@ -2102,6 +2467,46 @@ function draw(now){
         }
         ctx.restore();
       }
+    }else if (f.type==='icecrack'){         // ❄️ 裂冰踩裂：冰蓝裂纹炸开
+      const t=(now-f.t0)/900;
+      if (t<=1){
+        const X=px(f.x)+CELL/2, Y=px(f.y)+CELL/2;
+        ctx.save(); ctx.globalAlpha=(1-t)*0.9;
+        ctx.strokeStyle='#9fd8ff'; ctx.lineWidth=2.5; ctx.lineCap='round';
+        for(let i=0;i<4;i++){
+          const a=i*1.57+0.4;
+          ctx.beginPath(); ctx.moveTo(X,Y);
+          ctx.lineTo(X+Math.cos(a)*CELL*0.5*t, Y+Math.sin(a)*CELL*0.5*t);
+          ctx.stroke();
+        }
+        ctx.globalAlpha=1-t;
+        ctx.font=Math.floor(CELL*0.36)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText('❄️', X, Y);
+        ctx.restore();
+      }
+    }else if (f.type==='lavahit'){          // 🌋 踩熔岩：橙红火光炸开
+      const t=(now-f.t0)/900;
+      if (t<=1){
+        const X=px(f.x)+CELL/2, Y=px(f.y)+CELL/2;
+        ctx.save(); ctx.globalAlpha=(1-t)*0.9;
+        const g=ctx.createRadialGradient(X,Y,0,X,Y,CELL*0.7*t);
+        g.addColorStop(0,'rgba(255,240,180,.95)'); g.addColorStop(0.5,'rgba(255,120,40,.8)'); g.addColorStop(1,'rgba(255,60,20,0)');
+        ctx.fillStyle=g; ctx.beginPath(); ctx.arc(X,Y,CELL*0.7*t,0,7); ctx.fill();
+        ctx.globalAlpha=1-t;
+        ctx.font=Math.floor(CELL*0.4)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText('🌋', X, Y);
+        ctx.restore();
+      }
+    }else if (f.type==='switchon'){         // 🔆 触发机关：金色光环扩散
+      const t=(now-f.t0)/900;
+      if (t<=1){
+        const X=px(f.x)+CELL/2, Y=px(f.y)+CELL/2;
+        ctx.save(); ctx.globalAlpha=(1-t)*0.9;
+        ctx.strokeStyle='#ffe9a8'; ctx.lineWidth=3;
+        ctx.beginPath(); ctx.arc(X, Y, CELL*(0.2+0.6*t), 0, 7); ctx.stroke();
+        ctx.beginPath(); ctx.arc(X, Y, CELL*(0.1+0.4*t), 0, 7); ctx.stroke();
+        ctx.restore();
+      }
     }else if (f.type==='sunfx'){            // ☀️ 火墙点燃：橙红闪光
       const t=(now-f.t0)/500;
       if (t<=1){
@@ -2117,7 +2522,7 @@ function draw(now){
       if (t<=1){
         if (f.kind==='acid' || f.kind==='rain'){    // ☔🌧️ 酸雨/暴雨：全屏斜雨丝
           ctx.save(); ctx.globalAlpha=(1-t)*0.55;
-          ctx.strokeStyle = f.kind==='acid' ? '#9be07a' : '#7fb2ff';
+          ctx.strokeStyle = f.color || (f.kind==='acid' ? '#9be07a' : '#7fb2ff');
           ctx.lineWidth=1.5; ctx.beginPath();
           for(let i=0;i<46;i++){
             const sx=(i*173.3+i*i*7.7)%boardPx;
@@ -2235,7 +2640,7 @@ function renderDisasterBar(){                // 棋盘顶部：下一场天灾�
   if (!disastersOn){ bar.classList.remove('soon'); bar.innerHTML='<span>☄️ 天灾已关闭</span>'; return; }
   const every = isSyncMode() ? disasterInterval*4 : disasterInterval;
   const rem = every - (turnCount % every);
-  const D = DISASTERS[nextDisaster] || DISASTERS.acid;
+  const D = disasterInfo(nextDisaster);
   bar.classList.toggle('soon', rem<=1);
   bar.innerHTML = '☄️ 下一场天灾：<b>'+D.icon+' '+D.name+'</b> · '+(rem<=1 ? '<b>即将降临！</b>' : '还有 <b>'+rem+'</b> '+(isSyncMode()?'次行动':'回合'));
 }
@@ -2403,8 +2808,19 @@ function clickSkillSlot(p){              // 点击技能槽：无目标技能立
   renderPanel();
   toast(sk.icon+' '+sk.name+'：'+(sk.id==='phase'?'点击身边想穿过的墙方向':'点击'+(sk.target==='pawn'?'目标角色':'要击碎的墙')));
 }
+function refreshLevelSel(){      // 关卡下拉：闯关模式下锁定未解锁关（🔒），自由探索全开放
+  const sel = document.getElementById('levelSel'); if(!sel) return;
+  if (campaignOn && levelId>campaignProg) levelId = campaignProg;   // 切闯关时回到进度关
+  sel.innerHTML = LEVELS.map((L,i)=>{
+    const locked = campaignOn && i>campaignProg;
+    return `<option value="${i}"${locked?' disabled':''}>${L.icon} 第${i+1}关 · ${L.name} ${'★'.repeat(L.diff)}${locked?' 🔒':''}</option>`;
+  }).join('');
+  sel.value = String(levelId);
+}
 function syncSelects(){
   if (!isOnline()) document.getElementById('modeSel').value = mode;
+  document.getElementById('campSel').value = campaignOn? 'camp':'free';
+  refreshLevelSel();
   document.getElementById('sizeSel').value = String(N);
   document.getElementById('wallSel').value = String(wallStock);
   document.getElementById('itemSel').value = String(itemsOn?itemInterval:0);
@@ -2417,17 +2833,18 @@ function refreshHint(){
     ? '<b>道具开启</b>：棋盘每隔几秒出现 🎁 宝箱，走上去拾取（道具箱上限2）——🧱 +1 堵墙；🔨 砸碎一堵墙；🔋 恢复技能；🪤 埋陷阱；🌀 混乱对手；🛡️ 免疫 1 次技能/陷阱；💫 开箱即中眩晕。<br>'
     : '';
   const touchLine = touchMode ? '📱 <b>触屏放墙</b>：点格线先出预览，再点一次确认；点格子直接走子。<br>' : '';
+  const lvlLine = levelId>0 ? LEVELS[levelId].icon+' <b>'+LEVELS[levelId].name+'</b>：'+LEVELS[levelId].desc+'<br>' : '';   // 关卡机制提示
   const disLine = disastersOn ? '☄️ <b>天灾开启</b>：每 '+disasterInterval+' 回合（同步模式每 '+(disasterInterval*4)+' 次行动）随机降临 ☔ 酸雨蚀墙、⚡ 暴雷眩晕、🕳️ 地陷塌方、🌧️ 暴雨冲走道具（+1 行动）、☀️ 烈阳火墙、💥 大爆炸洗牌。<br>' : '';
   document.getElementById('hint').innerHTML = isSyncMode()
     ? '<b>同步模式</b>：没有回合，所有人同时行动！<br>'+
       '每人 <b>3 个操作点</b>（上限3）：走一步 / 放一堵墙各耗 1 点。<br>'+
       '动作间隔 <b>0.5 秒</b>，每秒恢复 1 点。<br>'+
-      itemLine+disLine+touchLine+
+      lvlLine+itemLine+disLine+touchLine+
       '先踏上中央 👑 王座者获胜'+(mode==='syncspec'?'。4 个 AI 实时互坑，会攒点蓄力、满点连发':'——AI 会攒点蓄力、满点连发，手速与规划并重！')
     : '<b>每回合二选一</b><br>'+
       '① 点击相邻格子 = 走一步（可跳过贴脸的棋子）<br>'+
       '② 点击格线缝隙 = 放一堵墙（占2格，永久，自己颜色）<br>'+
-      itemLine+disLine+
+      lvlLine+itemLine+disLine+
       '<b>获胜</b>：第一个踏上中央 👑 王座。<br>'+
       '墙不能穿过、不能重叠，也不许把任何人<b>彻底堵死</b>。<br>'+touchLine;
 }
@@ -2464,6 +2881,15 @@ function serializeState(){
     skillsOn, skillMax,
     collapsed: collapsed.map(c=>({x:c.x, y:c.y, end:c.end})),
     fireWalls: fireWalls.map(f=>({kind:f.kind, x:f.x, y:f.y, end:f.end})),
+    level: levelId,                                   // 关卡特殊地形（房主生成，各端以快照为准）
+    pillars: pillars.map(c=>({x:c.x, y:c.y})),
+    quicksand: quicksand.map(c=>({x:c.x, y:c.y})),
+    ice: iceCells.map(c=>({x:c.x, y:c.y})),
+    crack: crackCells.map(c=>({x:c.x, y:c.y, cr:c.cracked?1:0})),
+    lava: lavaCells.map(c=>({x:c.x, y:c.y})),
+    bridges: bridgeWalls.map(b=>({k:b.kind, x:b.x, y:b.y})),
+    sw: switchCells.map(c=>({x:c.x, y:c.y})),
+    lavaOff: lavaOffUntil,
     turnIdx, turnCount, passStreak,
     winner: winner==null ? null : (winner==='draw' ? 'draw' : winner.color),
     draft: draft? {offers:draft.offers, picked:draft.picked} : null,
@@ -2495,6 +2921,15 @@ function applySnapshot(s, ev){
   const prevColl = new Set(collapsed.map(c=>c.x+','+c.y));      // 快照 diff：消失的塌陷格 = 已恢复（远端补播 ✨ 动画）
   collapsed = (s.collapsed||[]).map(c=>({x:c.x, y:c.y, end:c.end}));
   fireWalls = (s.fireWalls||[]).map(f=>({kind:f.kind, x:f.x, y:f.y, end:f.end}));
+  levelId = LEVELS[s.level] ? s.level : 0;            // 关卡地形以房主快照为准（远端不自行生成）
+  pillars = (s.pillars||[]).map(c=>({x:c.x, y:c.y}));
+  quicksand = (s.quicksand||[]).map(c=>({x:c.x, y:c.y}));
+  iceCells = (s.ice||[]).map(c=>({x:c.x, y:c.y}));
+  crackCells = (s.crack||[]).map(c=>({x:c.x, y:c.y, cracked:!!c.cr}));
+  lavaCells = (s.lava||[]).map(c=>({x:c.x, y:c.y}));
+  bridgeWalls = (s.bridges||[]).map(b=>({kind:b.k, x:b.x, y:b.y}));
+  switchCells = (s.sw||[]).map(c=>({x:c.x, y:c.y}));
+  lavaOffUntil = s.lavaOff||0;
   for (const c of collapsed) prevColl.delete(c.x+','+c.y);
   for (const k of prevColl){ const [x,y]=k.split(',').map(Number); fx.push({type:'sinkhole', x, y, up:true, t0:performance.now()}); }
   disastersOn = s.disasters!==false;
@@ -2537,13 +2972,18 @@ function applyEvent(e){
   const now = performance.now();
   switch(e.type){
     case 'roundstart': toast('新对局开始！'); logLines = []; netSkillPicked=false; break;
-    case 'move': (e.jump?sJump:sMove)(); break;
+    case 'move': (e.slide?sSlide:(e.jump?sJump:sMove))(); break;
     case 'wall': sWall(); fx.push({type:'wallpop', kind:e.kind, x:e.x, y:e.y, t0:now}); break;
     case 'smash': sSmash(); fx.push({type:'smash', kind:e.kind, x:e.x, y:e.y, t0:now}); break;
     case 'skill': (e.fx==='jump'?sJump:sPick)(); break;
     case 'boxspawn': fx.push({type:'boxin', x:e.x, y:e.y, t0:now}); break;
     case 'boxopen': fx.push({type:'openbox', x:e.x, y:e.y, i:e.i, t0:now}); sPick(); break;
     case 'trapgo': { fx.push({type:'trapgo', x:e.x, y:e.y, t0:now}); sSmash(); toast('💥 有人踩中陷阱，掉回出生点！'); break; }
+    case 'qsink': { fx.push({type:'sinkhole', x:e.x, y:e.y, t0:now}); sSmash(); toast('⏳ '+((players.find(q=>q.color===e.color)||{}).name||'有人')+' 被流沙吞没，掉回出生点！'); break; }
+    case 'icecrack': { fx.push({type:'icecrack', x:e.x, y:e.y, t0:now}); sBad(); break; }
+    case 'switchon': { fx.push({type:'switchon', x:e.x, y:e.y, t0:now}); sPick(); break; }
+    case 'lavahit': { fx.push({type:'lavahit', x:e.x, y:e.y, t0:now}); sBad(); toast('🌋 '+((players.find(q=>q.color===e.color)||{}).name||'有人')+' 踩进熔岩，被烫回出生点！'); break; }
+    case 'bridgemove': sWall(); toast('🌉 浮桥变位！'); break;
     case 'disaster': {                              // 天灾屏幕特效（状态本身走快照，这里只播表现）
       const {type, ...rest} = e;                   // 剔除 type:'disaster'，防其覆盖 fx 的 type:'dfx'
       disasterFx(e.kind, rest);
@@ -2590,6 +3030,7 @@ function newOnlineGame(seats, settings){
   mode = settings.sync ? 'onsync' : 'online';
   netWatch = !!settings.watch;
   setBoardSize(settings.size);
+  levelId = LEVELS[settings.level] ? settings.level : 0;   // 关卡：随房间设置下发
   wallStock = settings.walls;
   itemsOn = settings.items>0; itemInterval = settings.items||5;
   skillsOn = settings.skills!==false;
@@ -2609,12 +3050,14 @@ function newOnlineGame(seats, settings){
       frozenTurns:0, frozenUntil:0, extraActs:0, paint:null,
       shield:false,
       rainBoost:false,
+      qsTurns:0,
     };
   });
   turnIdx = Math.floor(rnd()*4);
   winner = null; busy = false; turnCount = 0; passStreak = 0;
   itemClock = 0; boxes = []; traps = [];
   collapsed = []; fireWalls = [];            // 天灾残留清空
+  generateLevel();                           // 关卡地形（房主生成，随快照同步给全员）
   nextDisaster = rollDisaster();             // 重新预告下一场天灾（随首份快照同步给全员）
   logLines = [];
   logPush('🏁 新对局开始，抢座大战一触即发', null);
@@ -2630,7 +3073,7 @@ function netStartRound(){
   let sync, watch;
   if (sel){ const v = sel.value; sync = v.includes('1'); watch = v.startsWith('w'); }
   else { sync = isSyncMode(); watch = netWatch; }     // 对局中重开：沿用本局设置
-  netSend({ t:'start', settings:{ sync, watch, size:N, walls:wallStock, items: itemsOn?itemInterval:0, skills: skillsOn, skillMax, disasters: disastersOn, disasterInterval } });
+  netSend({ t:'start', settings:{ sync, watch, size:N, walls:wallStock, items: itemsOn?itemInterval:0, skills: skillsOn, skillMax, disasters: disastersOn, disasterInterval, level: levelId } });
 }
 
 /* ---- 连接与房间 UI ---- */
@@ -2879,6 +3322,16 @@ document.getElementById('modeSel').onchange = function(){
   if (this.value==='online'){ mode='online'; myColor=null; showNetConnect(); return; }
   if (isOnline()){ this.value='online'; return; }   // 在线中不允许切回本地模式，先离开房间
   mode=this.value; newGame();
+};
+document.getElementById('campSel').onchange = function(){
+  campaignOn = this.value==='camp';
+  refreshLevelSel();
+  newGame();                                    // 切闯关模式：跳到当前进度关重开
+};
+document.getElementById('levelSel').onchange = function(){
+  if (isOnline() && !hostSim()){ refreshLevelSel(); return; }   // 在线时仅房主可调
+  levelId = +this.value;
+  newGame();
 };
 document.getElementById('sizeSel').onchange = function(){
   if (isOnline()){ if(!hostSim()) this.value=String(N); return; }   // 在线时仅房主在大厅可调

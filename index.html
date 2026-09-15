@@ -26,7 +26,7 @@
   canvas{ display:block; border-radius:14px; }
   #side{ width:300px; flex:0 0 300px; display:flex; flex-direction:column; gap:10px;}
   #leftbar{ width:170px; flex:0 0 170px; display:flex; flex-direction:column; gap:10px; align-self:stretch;}
-  .logcard{ flex:1 1 auto; min-height:96px; display:flex; flex-direction:column; overflow:hidden;}
+  .logcard{ flex:0 0 auto; height:240px; display:flex; flex-direction:column; overflow:hidden;}
   #logBody{ flex:1 1 auto; min-height:0; overflow-y:auto; font-size:11px; line-height:1.8; color:var(--dim); scrollbar-width:thin;}
   #logBody::-webkit-scrollbar{ width:4px;}
   #logBody::-webkit-scrollbar-thumb{ background:#263252; border-radius:2px;}
@@ -126,7 +126,7 @@
     #side .card{ flex:1 1 45%;}
     #leftbar{ width:100%; max-width:520px; flex:none; flex-direction:row; flex-wrap:wrap; align-self:auto;}
     #leftbar .card{ flex:1 1 45%;}
-    #leftbar .logcard{ flex:1 1 100%; max-height:150px;}
+    #leftbar .logcard{ flex:1 1 100%; height:150px;}
   }
 </style>
 </head>
@@ -181,6 +181,11 @@
         <option value="5">道具：每 5 秒刷新</option>
         <option value="7">道具：每 7 秒刷新</option>
         <option value="10">道具：每 10 秒刷新</option>
+      </select>
+      <div style="height:8px"></div>
+      <select id="disasterSel">
+        <option value="1" selected>天灾：每 3 回合降临</option>
+        <option value="0">天灾：关闭</option>
       </select>
       <div style="height:8px"></div>
       <select id="skillSel">
@@ -251,6 +256,7 @@ const ITEMS = {
   trap:     {icon:'🪤', name:'陷阱卡',     desc:'点击空格埋入陷阱（仅自己可见），踩中者掉回出生点'},
   confusion:{icon:'🌀', name:'混乱卡',     desc:'点击一名对手：其下一步方向上下左右颠倒'},
   stun:     {icon:'💫', name:'眩晕',       desc:'开箱即触发：拾取者暂停 1 回合'},
+  shield:   {icon:'🛡️', name:'保护卡',     desc:'点击激活：免疫 1 次敌方指向性技能或陷阱（护盾状态仅自己可见）'},
 };
 
 /* ================= 状态 ================= */
@@ -261,6 +267,8 @@ let players = [];
 let turnIdx = 0, winner = null, busy = false, turnCount = 0, passStreak = 0;
 let mode = 'pve', wallStock = 8, muted = false, fastAI = false;
 let itemsOn = false, itemInterval = 5, itemClock = 0;   // 道具系统：定时发到玩家道具箱
+let disastersOn = true;                         // 天灾系统：每 3 回合降下随机场地天灾
+let collapsed = [], fireWalls = [];             // 地陷：塌陷格 {x,y,end} / 烈阳：火墙 {kind,x,y,end}（end=到期回合数）
 let skillsOn = true;                            // 技能系统开关
 let pendingSkill = null, pendingItem = null;    // 目标选择中：待确认的技能/道具
 let skArming = null;                            // 左栏技能卡二次确认中：确认发起者的颜色
@@ -296,6 +304,7 @@ if (Q.get('walls') && qw>=1) wallStock = Math.min(20, qw);
 if (Q.get('size')){ const n=+Q.get('size'); if([9,11,13,15].includes(n)) setBoardSize(n); }
 if (Q.get('item')){ const v=+Q.get('item'); if([3,5,7,10].includes(v)){ itemsOn=true; itemInterval=v; } }
 if (Q.get('skill')==='0') skillsOn = false;
+if (Q.get('disaster')==='0') disastersOn = false;
 if (Q.get('fast') === '1') fastAI = true;
 srand(Q.get('seed') ? +Q.get('seed') : ((Date.now()*2654435761)>>>0));
 
@@ -343,7 +352,7 @@ function bfsFromThrone(wH, wV){
     const [x,y]=q[h], d=dist[y*N+x];
     for(const[dx,dy]of DIRS){
       const nx=x+dx, ny=y+dy;
-      if(!inB(nx,ny)) continue;
+      if(!inB(nx,ny) || isCollapsed(nx,ny)) continue;   // 🕳️ 塌陷格视为不可通行（连通性/合法墙位一并感知）
       if (dx===1)  { if (wV.has(K(nx,y))||wV.has(K(nx,y-1))) continue; }
       else if(dx===-1){ if (wV.has(K(x,y))||wV.has(K(x,y-1))) continue; }
       else if(dy===1) { if (wH.has(K(x,ny))||wH.has(K(x-1,ny))) continue; }
@@ -368,12 +377,12 @@ function legalMoves(p){
   const res=[]; const {x,y}=p.cell;
   for(const[dx,dy]of DIRS){
     const nx=x+dx, ny=y+dy;
-    if(!inB(nx,ny)||blocked(x,y,nx,ny)) continue;
+    if(!inB(nx,ny)||blocked(x,y,nx,ny)||isCollapsed(nx,ny)) continue;
     const occ = pawnAt(nx,ny);
     if(!occ) res.push({x:nx,y:ny});
     else{
       const jx=nx+dx, jy=ny+dy;   // 直线跳过贴脸棋子
-      if(inB(jx,jy)&&!blocked(nx,ny,jx,jy)&&!pawnAt(jx,jy)) res.push({x:jx,y:jy});
+      if(inB(jx,jy)&&!blocked(nx,ny,jx,jy)&&!pawnAt(jx,jy)&&!isCollapsed(jx,jy)) res.push({x:jx,y:jy});
     }
   }
   return res;
@@ -427,11 +436,15 @@ function newGame(){
       inv:[],                                     // 道具箱：'wall' 🧱 / 'hammer' 🔨
       skill:null, skillUsed:false, skillOffer:[], // 本局技能 / 是否已用 / 开局 3 选 1 候选
       frozenTurns:0, frozenUntil:0, extraActs:0, paint:null,
+      shield:false,
+      rainBoost:false,                            // 🌧️ 暴雨加成：本回合多一次行动（同步模式=下一步不耗操作点）
     };
   });
   turnIdx = Math.floor(rnd()*4);
   winner = null; busy = false; turnCount = 0; passStreak = 0;
+  THRONE.x = THRONE.y = (N-1)/2;         // 王座复位正中（上一局可能被 👑 技能搬走）
   itemClock = 0; boxes = []; traps = [];
+  collapsed = []; fireWalls = [];            // 天灾残留清空
   logLines = [];
   logAppend('🏁 新对局开始，抢座大战一触即发', null);
   confetti = []; fx = []; toastMsg = null; pendingWall = null;
@@ -564,7 +577,13 @@ function doMove(p, cell){
   jump ? sJump() : sMove();
   if (cell.x===THRONE.x && cell.y===THRONE.y){ endGame(p); return; }
   afterStep(p, cell);                    // 落格结算：陷阱 → 宝箱（传送类技能不经过这里，天然不触发）
-  if (isSyncMode()){ spendAP(p); renderPanel(); return; }
+  if (isSyncMode()){
+    if (p.rainBoost){ p.rainBoost=false; toast('🌧️ 暴雨冲刺：本次行动不耗操作点'); }
+    else spendAP(p);
+    expireDisasters(); maybeDisaster();
+    renderPanel();
+    return;
+  }
   if (p.extraActs>0){ p.extraActs--; toast('💨 疾跑：可再行动一次'); renderPanel(); scheduleAI(); return; }
   nextTurn();
 }
@@ -592,7 +611,7 @@ const cheb = (x,y,c) => Math.max(Math.abs(x-c.x), Math.abs(y-c.y));
 function randCell(filter){                     // 随机空格（不在王座上，可附加过滤条件）
   const cands=[];
   for(let y=0;y<N;y++) for(let x=0;x<N;x++)
-    if (!pawnAt(x,y) && !(x===THRONE.x&&y===THRONE.y) && (!filter||filter(x,y))) cands.push({x,y});
+    if (!pawnAt(x,y) && !isCollapsed(x,y) && !(x===THRONE.x&&y===THRONE.y) && (!filter||filter(x,y))) cands.push({x,y});
   return cands.length? cands[Math.floor(rnd()*cands.length)] : null;
 }
 function throneMovable(x,y){                   // 王座迁到 (x,y) 是否人人仍有路（临时换座验证）
@@ -605,6 +624,18 @@ function throneMovable(x,y){                   // 王座迁到 (x,y) 是否人�
 function teleport(pawn, cell){                 // 传送并带动 90ms 滑动动画
   pawn.tween = {fx:pawn.cell.x, fy:pawn.cell.y, t0:performance.now()};
   pawn.cell = {x:cell.x, y:cell.y};
+}
+function shieldBlockSkill(p, v, sk){       // 🛡️ 护盾挡下指向性技能：技能照常消耗、效果免疫（特效全员可见）
+  v.shield = false;
+  p.skillUsed = true;
+  fx.push({type:'shieldpop', x:v.cell.x, y:v.cell.y, t0:performance.now()});
+  netEv({type:'shieldfx', color:v.color});
+  netEv({type:'skill', fx:'pick'});
+  sPick();
+  toast('🛡️ '+COLORS[v.color].name+' 的护盾挡下了 '+sk.icon+' '+sk.name+'！');
+  logPush('释放 '+sk.icon+' '+sk.name+'，被 🛡️ 护盾挡下', p.color);
+  renderPanel();
+  return true;
 }
 
 function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=穿墙方向 / {color}=角色 / null
@@ -619,7 +650,7 @@ function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=�
       done = true; break; }
     case 'phase': {                            // 👻 穿过身边一堵墙，落到另一侧空格
       const nx=p.cell.x+t.dx, ny=p.cell.y+t.dy;
-      if (!inB(nx,ny) || pawnAt(nx,ny) || !blocked(p.cell.x,p.cell.y,nx,ny)) return false;
+      if (!inB(nx,ny) || isCollapsed(nx,ny) || pawnAt(nx,ny) || !blocked(p.cell.x,p.cell.y,nx,ny)) return false;
       teleport(p, {x:nx,y:ny}); sJump();
       netEv({type:'skill', fx:'jump'}); done = true;
       if (p.cell.x===THRONE.x && p.cell.y===THRONE.y){   // 穿墙直达王座：直接获胜
@@ -629,6 +660,7 @@ function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=�
     case 'steal': {                            // 🪓 夺取目标道具箱里 1 个道具
       const v=players.find(q=>q.color===t.color);
       if (!v || v===p || !v.inv.length) return false;
+      if (v.shield) return shieldBlockSkill(p, v, sk);
       p.inv.push(v.inv.pop());
       sPick(); netEv({type:'skill', fx:'pick'});
       toast(COLORS[p.color].name+' 🪓 夺走了 '+COLORS[v.color].name+' 的道具');
@@ -636,18 +668,21 @@ function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=�
     case 'swap': {                             // 🔄 与目标互换位置
       const v=players.find(q=>q.color===t.color);
       if (!v || v===p) return false;
+      if (v.shield) return shieldBlockSkill(p, v, sk);
       const a={...p.cell}, b={...v.cell};
       teleport(p, b); teleport(v, a);
       sJump(); netEv({type:'skill', fx:'jump'}); done = true; break; }
     case 'swapcolor': {                        // 🎨 与目标互换显示色（棋子与墙）
       const v=players.find(q=>q.color===t.color);
       if (!v || v===p) return false;
+      if (v.shield) return shieldBlockSkill(p, v, sk);
       const da=p.paint||p.color, db=v.paint||v.color;
       p.paint=db; v.paint=da;
       sPick(); netEv({type:'skill', fx:'pick'}); done = true; break; }
     case 'freeze': {                           // ❄️ 定身：经典=下回合跳过 / 同步=3 秒不能动
       const v=players.find(q=>q.color===t.color);
       if (!v || v===p) return false;
+      if (v.shield) return shieldBlockSkill(p, v, sk);
       if (isSyncMode()) v.frozenUntil = performance.now()+3000;
       else v.frozenTurns = 1;
       fx.push({type:'freeze', x:v.cell.x, y:v.cell.y, t0:performance.now()});
@@ -665,6 +700,7 @@ function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=�
     case 'shuffle': {                          // 🌀 把目标随机传送到任意空格
       const v=players.find(q=>q.color===t.color);
       if (!v || v===p) return false;
+      if (v.shield) return shieldBlockSkill(p, v, sk);
       const c = randCell();
       if (!c) return false;
       teleport(v, c); sJump(); netEv({type:'skill', fx:'jump'}); done = true; break; }
@@ -688,12 +724,191 @@ function doWall(p, kind, x, y){
   netEv({type:'wall', color:p.color, kind, x, y});
   logPush('放了一堵墙', p.color);
   fx.push({type:'wallpop', kind, x, y, t0:performance.now()});
-  if (isSyncMode()){ spendAP(p); renderPanel(); return; }
+  if (isSyncMode()){
+    if (p.rainBoost){ p.rainBoost=false; toast('🌧️ 暴雨冲刺：本次行动不耗操作点'); }
+    else spendAP(p);
+    expireDisasters(); maybeDisaster();
+    renderPanel();
+    return;
+  }
   if (p.extraActs>0){ p.extraActs--; toast('💨 疾跑：可再行动一次'); renderPanel(); scheduleAI(); return; }
   nextTurn();
 }
+
+/* ================= 天灾系统 ================= */
+const DISASTERS = {
+  acid:   {icon:'☔', name:'酸雨'},
+  thunder:{icon:'⚡', name:'暴雷'},
+  sink:   {icon:'🕳️', name:'地陷'},
+  rain:   {icon:'🌧️', name:'暴雨'},
+  sun:    {icon:'☀️', name:'烈阳'},
+  bang:   {icon:'💥', name:'大爆炸'},
+};
+function isCollapsed(x,y){ return collapsed.some(c=>c.x===x&&c.y===y); }
+function shuffleArr(a){                     // 天灾专用洗牌（走 rnd() 种子随机）
+  for(let i=a.length-1;i>0;i--){ const j=Math.floor(rnd()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
+  return a;
+}
+function removeWall(kind,x,y){              // 天灾拆墙：清墙身 + 归属 + 火墙档案（防陈旧档案日后误删同坐标新墙）
+  (kind==='h'?wallsH:wallsV).delete(K(x,y));
+  delete wallOwner[kind+' '+K(x,y)];
+  const fi = fireWalls.findIndex(f=>f.kind===kind&&f.x===x&&f.y===y);
+  if (fi>=0) fireWalls.splice(fi,1);
+}
+function expireDisasters(){                 // 天灾到期结算（仅主机/单机）：火墙烧尽 / 塌陷格恢复
+  if (!hostSim() || winner) return;
+  const fOut = fireWalls.filter(f=>f.end<=turnCount);
+  if (fOut.length){
+    for (const f of fOut) removeWall(f.kind, f.x, f.y);
+    logPush('☀️ '+fOut.length+' 面火墙烧尽熄灭', null);
+  }
+  const cOut = collapsed.filter(c=>c.end<=turnCount);
+  if (cOut.length){
+    collapsed = collapsed.filter(c=>c.end>turnCount);
+    for (const c of cOut) fx.push({type:'sinkhole', x:c.x, y:c.y, up:true, t0:performance.now()});
+    logPush('🕳️ '+cOut.length+' 个塌陷格恢复如初', null);
+  }
+}
+function maybeDisaster(){                    // 天灾调度：经典每 3 手 / 同步每 12 次行动（≈4 人各 3 手）
+  if (!disastersOn || winner || !hostSim()) return;
+  const every = isSyncMode() ? 12 : 3;
+  if (turnCount % every !== 0) return;
+  const kind = Object.keys(DISASTERS)[Math.floor(rnd()*6)];
+  const D = DISASTERS[kind];
+  logPush(D.icon+' 天灾降临：'+D.name, null);
+  const extra = ({acid:disasterAcid, thunder:disasterThunder, sink:disasterSink,
+                  rain:disasterRain, sun:disasterSun, bang:disasterBang})[kind]() || {};
+  netEv({type:'disaster', kind, ...extra});
+  disasterFx(kind, extra);
+  toast(D.icon+' 天灾降临：'+D.name+'！');
+  renderPanel();
+}
+function disasterAcid(){                     // ☔ 酸雨：随机腐蚀约 1/3 的既有墙面
+  const list=[];
+  for (const key of wallsH) list.push(['h', ...key.split(',').map(Number)]);
+  for (const key of wallsV) list.push(['v', ...key.split(',').map(Number)]);
+  if (!list.length){ logPush('☔ 酸雨落下，但场上没有墙可腐蚀', null); return {}; }
+  const n = Math.max(1, Math.floor(list.length/3));
+  for (const w of shuffleArr(list).slice(0,n)){
+    fx.push({type:'smash', kind:w[0], x:w[1], y:w[2], t0:performance.now()});
+    removeWall(w[0], w[1], w[2]);
+  }
+  sSmash();
+  logPush('☔ 酸雨腐蚀了 '+n+' 堵墙', null);
+  return {count:n};
+}
+function disasterThunder(){                  // ⚡ 暴雷：劈中约 1/4 棋盘区域，区内棋子眩晕 1 回合
+  const half = Math.ceil(N/2);
+  const qx = rnd()<0.5? 0 : N-half, qy = rnd()<0.5? 0 : N-half;
+  const hits = players.filter(p=>!p.left && p.cell.x>=qx && p.cell.x<qx+half && p.cell.y>=qy && p.cell.y<qy+half);
+  for (const p of hits) applyStun(p);
+  logPush(hits.length
+    ? '⚡ 暴雷劈中 '+hits.map(p=>COLORS[p.color].name).join('、')+'，眩晕 1 回合'
+    : '⚡ 暴雷劈下，无人被击中', null);
+  return {x:qx, y:qy, w:half};
+}
+function spawnDrop(p){                       // 掉回出生点（出生点被占则滑落到最近空格）
+  const s = SPAWN[p.color];
+  if (!pawnAt(s.x,s.y) && !isCollapsed(s.x,s.y)){ teleport(p, s); return; }
+  let best=null, bd=1e9;
+  for(let y=0;y<N;y++) for(let x=0;x<N;x++){
+    if (pawnAt(x,y) || isCollapsed(x,y) || (x===THRONE.x&&y===THRONE.y)) continue;
+    const d = Math.abs(x-s.x)+Math.abs(y-s.y);
+    if (d<bd){ bd=d; best={x,y}; }
+  }
+  if (best) teleport(p, best);
+}
+function disasterSink(){                     // 🕳️ 地陷：约 1/5 格子塌陷 2 回合；塌陷格不可移入，塌上者掉回出生点
+  const cands=[];
+  for(let y=0;y<N;y++) for(let x=0;x<N;x++){
+    if (x===THRONE.x&&y===THRONE.y) continue;                                  // 王座不塌
+    if (isCollapsed(x,y) || boxes.some(b=>b.x===x&&b.y===y) || traps.some(t=>t.x===x&&t.y===y)) continue;
+    if (Object.values(SPAWN).some(s=>s.x===x&&s.y===y)) continue;              // 出生点不塌：保证掉落落点安全
+    cands.push({x,y});
+  }
+  if (!cands.length) return {};
+  const picked = shuffleArr(cands).slice(0, Math.min(cands.length, Math.floor(N*N/5)));
+  for (const c of picked){
+    collapsed.push({x:c.x, y:c.y, end:turnCount+2});
+    fx.push({type:'sinkhole', x:c.x, y:c.y, t0:performance.now()});
+  }
+  sSmash();
+  logPush('🕳️ '+picked.length+' 个格子塌陷（2 回合后恢复）', null);
+  for (const p of players){
+    if (p.left || !picked.some(c=>c.x===p.cell.x&&c.y===p.cell.y)) continue;
+    spawnDrop(p);
+    logPush('🕳️ '+COLORS[p.color].name+' 随地面塌陷掉回出生点', p.color);
+  }
+  return {cells: picked.map(c=>[c.x,c.y])};
+}
+function disasterRain(){                     // 🌧️ 暴雨：冲走所有玩家道具，每人下回合可多行动一次
+  for (const p of players){
+    if (p.left) continue;
+    if (p.inv.length) logPush('🌧️ 冲走了 '+COLORS[p.color].name+' 身上的 '+p.inv.map(i=>ITEMS[i].icon).join(''), p.color);
+    p.inv = [];
+    p.rainBoost = true;
+  }
+  return {};
+}
+function disasterSun(){                      // ☀️ 烈阳：随机点燃 10 面火墙（无主），2 回合后烧尽
+  let placed=0;
+  for (const s of shuffleArr(allWallSpots().slice())){
+    if (placed>=10) break;
+    const [kind,x,y]=s;
+    if (!wallOK(kind,x,y)) continue;         // 候选基于落墙前快照，逐面复验避免互相冲突/断路
+    (kind==='h'?wallsH:wallsV).add(K(x,y));
+    wallOwner[kind+' '+K(x,y)] = null;       // 无主之火：不计入任何玩家的墙数
+    fireWalls.push({kind, x, y, end:turnCount+2});
+    fx.push({type:'sunfx', kind, x, y, t0:performance.now()});
+    placed++;
+  }
+  if (placed){ sWall(); logPush('☀️ 烈阳点燃了 '+placed+' 面火墙（2 回合后烧尽）', null); }
+  else logPush('☀️ 烈阳当空，但无处可以起火', null);
+  return {count:placed};
+}
+function disasterBang(){                     // 💥 大爆炸：王座/玩家/墙面全部随机换位，逐堵复验保证人人可达（不可完全闭合）
+  const owners=[];                           // 先收割真实墙归属（火墙无主，直接炸灭不重放）
+  for (const k in wallOwner){
+    if (!wallOwner[k]) continue;
+    const [x,y]=k.slice(2).split(',').map(Number);
+    owners.push([k[0], x, y, wallOwner[k]]);
+  }
+  wallsH.clear(); wallsV.clear(); wallOwner={}; fireWalls=[]; collapsed=[];
+  const pool=[];
+  for(let y=0;y<N;y++) for(let x=0;x<N;x++)
+    if (!Object.values(SPAWN).some(s=>s.x===x&&s.y===y)) pool.push({x,y});
+  shuffleArr(pool);
+  const t = pool.pop();                      // 新王座：任意非出生点格
+  THRONE.x=t.x; THRONE.y=t.y;
+  fx.push({type:'throne', x:t.x, y:t.y, t0:performance.now()});
+  const taken = new Set([t.y*N+t.x]);
+  for (const p of players){                  // 玩家随机落位：互不重叠、不占王座
+    if (p.left) continue;
+    const c = pool.find(c=>!taken.has(c.y*N+c.x));
+    if (!c) break;
+    taken.add(c.y*N+c.x);
+    teleport(p, c);
+  }
+  let walls=0;
+  for (const s of shuffleArr(allWallSpots().slice())){   // 幸存墙换到全新随机位置（owner 保留）
+    if (walls>=owners.length) break;
+    const [kind,x,y]=s;
+    if (!wallOK(kind,x,y)) continue;
+    (kind==='h'?wallsH:wallsV).add(K(x,y));
+    wallOwner[kind+' '+K(x,y)] = owners[walls][3];
+    walls++;
+  }
+  sSmash(); sWall();
+  logPush('💥 大爆炸！棋盘格局重组（'+walls+'/'+owners.length+' 堵墙幸存）', null);
+  return {tx:THRONE.x, ty:THRONE.y};
+}
+function disasterFx(kind, extra){            // 天灾屏幕级特效（本地触发与远端 applyEvent 共用）
+  fx.push({type:'dfx', kind, t0:performance.now(), ...extra});
+}
 function nextTurn(){
   if (winner) return;
+  expireDisasters();                       // 天灾到期结算：地陷恢复 / 火墙熄灭
+  maybeDisaster();                         // 天灾：每 3 回合降下一次
   cur().extraActs=0;                       // 疾跑加行动只在当回合有效（防 pass 残留）
   turnIdx = (turnIdx+1)%players.length;
   let guard = players.length*2;            // 防多人同时被定身导致死循环
@@ -709,6 +924,10 @@ function nextTurn(){
       passStreak++;
       turnIdx = (turnIdx+1)%players.length;
       continue;
+    }
+    if (f.rainBoost){                      // 🌧️ 暴雨加成：轮到该玩家时兑现 +1 次行动
+      f.rainBoost = false; f.extraActs++;
+      toast('🌧️ 暴雨加成：'+COLORS[f.color].name+' 本回合可多行动一次');
     }
     break;
   }
@@ -826,9 +1045,9 @@ function aiTurn(){
         const gain=after-before;
         if(gain>0){ rawGain+=gain; hurt += gain * (1 + Math.max(0,(6-before))*0.35); }
       }
-      const selfCost = myD - d2[p.color];
-      if (rawGain <= selfCost) continue;   // 拖对手的总量不超过自损：白坑自己，直接否决
-      const score = hurt - selfCost*2.2 + rnd()*0.5;
+      const selfCost = d2[p.color] - myD;              // 正 = 自己的路被这堵墙延长
+      if (selfCost > 0 && rawGain <= selfCost*2) continue;   // 自路受损时，拖对手总量必须≥2倍自损才值得
+      const score = hurt - selfCost*3 + rnd()*0.5;
       if (score>bestScore){ bestScore=score; bestWall=[k,x,y]; }
     }
   }
@@ -840,7 +1059,7 @@ function aiTurn(){
       const sH=k==='h'?new Set(wallsH):wallsH, sV=k==='v'?new Set(wallsV):wallsV;
       if(k==='h') sH.add(K(x,y)); else sV.add(K(x,y));
       const d2=allDists(sH,sV);
-      const selfCost = myD - d2[p.color];
+      const selfCost = d2[p.color] - myD;
       if (selfCost > 1) continue;                    // 紧急时刻也最多容忍自损 1 步
       let hurt=0;
       for(const q of opps){
@@ -866,6 +1085,7 @@ function bestToward(p, ms){
   return best;
 }
 function aiUseItems(p){                      // 免费道具：AI 择机自动用（函数内 logPush/netEv 自带联机同步）
+  if (useShieldItem(p)) return true;         // 🛡️ 保护卡：拿到就用（免疫 1 次技能/陷阱）
   const iR = p.inv.indexOf('restore');
   if (iR>=0 && skillsOn && p.skill && p.skillUsed){    // 🔋 技能用过才恢复
     p.inv.splice(iR,1); p.skillUsed=false;
@@ -873,12 +1093,13 @@ function aiUseItems(p){                      // 免费道具：AI 择机自动�
     return true;
   }
   const dists = allDists();
+  const myD = dists[p.color];
   const lead = players.filter(q=>q!==p && !q.left).sort((a,b)=>dists[a.color]-dists[b.color])[0];
-  if (!lead) return false;
-  if (p.inv.indexOf('confusion')>=0 && dists[lead.color]<=6){   // 🌀 混乱领先者
+  if (!lead || dists[lead.color] >= myD) return false;   // 领先者没跑到我前面：留着择机，不盲目出手
+  if (p.inv.indexOf('confusion')>=0 && dists[lead.color]<=5){   // 🌀 混乱领先者
     if (useConfusionItem(p, lead)) return true;
   }
-  if (p.inv.indexOf('trap')>=0 && dists[lead.color]<=5){        // 🪤 埋在领先者下一步
+  if (p.inv.indexOf('trap')>=0 && dists[lead.color]<=4){        // 🪤 埋在领先者下一步
     const {dist}=bfsFromThrone(wallsH,wallsV);
     const cands = legalMoves(lead).sort((a,b)=>dist[a.y*N+a.x]-dist[b.y*N+b.x]);
     for(const c of cands){ if (useTrapItem(p, c.x, c.y)) return true; }
@@ -950,9 +1171,9 @@ function syncAIDecide(p){
         const gain=d2[q.color]-dists[q.color];
         if(gain>0){ rawGain+=gain; hurt += gain * (1 + Math.max(0,(6-dists[q.color]))*0.35); }
       }
-      const selfCost = myD - d2[p.color];
-      if (rawGain <= selfCost) continue;   // 拖对手的总量不超过自损：白坑自己，直接否决
-      const score = hurt - selfCost*2.2 + rnd()*0.5;
+      const selfCost = d2[p.color] - myD;              // 正 = 自己的路被这堵墙延长
+      if (selfCost > 0 && rawGain <= selfCost*2) continue;   // 自路受损时，拖对手总量必须≥2倍自损才值得
+      const score = hurt - selfCost*3 + rnd()*0.5;
       if (score>bestScore){ bestScore=score; bestWall=[k,x,y]; }
     }
   }
@@ -973,7 +1194,7 @@ function spawnBox(){                      // 每 itemInterval 秒：棋盘随机
   const put = (k,w)=>{ if (ITEMS[k]) for(let i=0;i<w;i++) pool.push(k); };
   put('wall',3); put('hammer',3);
   if (skillsOn) put('restore',2);
-  put('trap',2); put('confusion',2); put('stun',1);
+  put('trap',2); put('confusion',2); put('stun',1); put('shield',2);
   const kind = pool[Math.floor(rnd()*pool.length)];
   boxes.push({x:c.x, y:c.y, i:kind});
   fx.push({type:'boxin', x:c.x, y:c.y, t0:performance.now()});
@@ -1017,10 +1238,24 @@ function canSeeTrap(t){                   // 陷阱仅埋设方可见（联机�
   const o = players.find(p=>p.color===t.o);
   return !!(o && o.human);
 }
+function canSeeShield(p){                 // 护盾状态仅使用者可见（联机看自己；本地看人类方）
+  if (isOnline()) return p.color===myColor;
+  return !!p.human;
+}
 function triggerTrap(p, cell){            // 踩中陷阱：塌陷特效 + 掉回出生点，陷阱消耗
   const t = trapAt(cell.x, cell.y);
   if (!t || t.o===p.color) return false;  // 埋设方免疫自己的陷阱
   traps.splice(traps.indexOf(t), 1);
+  if (p.shield){                          // 🛡️ 护盾挡下陷阱：免于掉回出生点（特效全员可见）
+    p.shield = false;
+    fx.push({type:'shieldpop', x:cell.x, y:cell.y, t0:performance.now()});
+    netEv({type:'shieldfx', color:p.color});
+    sPick();
+    toast('🛡️ '+COLORS[p.color].name+' 的护盾挡下了陷阱！');
+    logPush('🛡️ 护盾挡下 🪤 陷阱，免于掉回出生点', p.color);
+    renderPanel();
+    return true;
+  }
   fx.push({type:'trapgo', x:cell.x, y:cell.y, t0:performance.now()});
   sSmash();
   netEv({type:'trapgo', x:cell.x, y:cell.y});
@@ -1053,22 +1288,36 @@ function useConfusionItem(p, v){          // 混乱：目标对手下一步方�
   logPush('🌀 对 '+COLORS[v.color].name+' 使用混乱卡', p.color);
   return true;
 }
+function useShieldItem(p){                // 保护卡：免疫 1 次敌方指向性技能或陷阱（状态仅自己可见）
+  const i = p.inv.indexOf('shield');
+  if (i<0 || p.shield) return false;
+  p.inv.splice(i,1);
+  p.shield = true;
+  sPick(); renderPanel();
+  logPush('使用 🛡️ 保护卡，获得 1 次技能/陷阱免疫', p.color, true);   // 保密：仅自己可见
+  return true;
+}
 function bestSmash(p){
   let best=null, bestGain=0;
-  const myD = bfsFromThrone(wallsH,wallsV).dist[p.cell.y*N+p.cell.x];
+  const d0 = bfsFromThrone(wallsH,wallsV).dist;
+  const myD = d0[p.cell.y*N+p.cell.x];
+  const opps = players.filter(q=>q!==p&&!q.left);
   const consider=[];
   wallsH.forEach(function(k){ const[a,b]=k.split(',').map(Number); consider.push(['h',a,b]); });
   wallsV.forEach(function(k){ const[a,b]=k.split(',').map(Number); consider.push(['v',a,b]); });
   for(const [k,x,y] of consider){
     const sH=new Set(wallsH), sV=new Set(wallsV);   // 双向拷贝：评估绝不能污染真实棋局
     sH.delete(K(x,y)); sV.delete(K(x,y));
-    const d2 = bfsFromThrone(sH,sV).dist[p.cell.y*N+p.cell.x];
-    const gain = myD - d2;
-    if (gain>bestGain){ bestGain=gain; best=[k,x,y]; }
+    const d2 = bfsFromThrone(sH,sV).dist;
+    const gain = myD - d2[p.cell.y*N+p.cell.x];
+    let oppGain=0;                                  // 砸墙对手也受益：别人沾光比我多就不砸
+    for(const q of opps){ const og=d0[q.cell.y*N+q.cell.x]-d2[q.cell.y*N+q.cell.x]; if(og>oppGain) oppGain=og; }
+    const net = gain - oppGain;
+    if (gain>=1 && net>bestGain){ bestGain=net; best=[k,x,y]; }
   }
   return best;
 }
-const AI_SKILL_RANK = { phase:9, sprint:8, breakwall:7, swap:6, freeze:6, jump:5, thronemove:5, shuffle:4, steal:3, swapcolor:2 };
+const AI_SKILL_RANK = { phase:9, sprint:8, breakwall:7, swap:6, freeze:6, thronemove:5, shuffle:4, jump:3, steal:3, swapcolor:2 };
 function aiPickSkill(offer){               // AI 选技：按强度排序取最高
   return offer.slice().sort((a,b)=>(AI_SKILL_RANK[b]||0)-(AI_SKILL_RANK[a]||0))[0];
 }
@@ -1097,11 +1346,11 @@ function aiUseSkill(p){                    // AI 用技启发式（免费即时�
       }
       return best? use(best):false;
     }
-    case 'steal': { const v=opps.find(q=>q.inv.length); return v? use({color:v.color}):false; }
+    case 'steal': { const v=opps.filter(q=>q.inv.length).sort((a,b)=>dists[a.color]-dists[b.color])[0]; return v? use({color:v.color}):false; }   // 优先偷领先者
     case 'swap': { return (myD-dists[lead.color]>=3)? use({color:lead.color}):false; }
     case 'swapcolor': { return (dists[lead.color]+2<=myD)? use({color:lead.color}):false; }   // 落后时捣乱
     case 'freeze': { return (dists[lead.color]<=3 && myD>dists[lead.color])? use({color:lead.color}):false; }
-    case 'jump': { return myD>=7? use(null):false; }                  // 落点随机：远时赌一把
+    case 'jump': { return (myD>=6 && myD-dists[lead.color]>=3)? use(null):false; }   // 落点随机：仅落后较多时赌一把
     case 'thronemove': { return (myD>=6 && myD-dists[lead.color]>=3)? use(null):false; }
     case 'shuffle': { return (dists[lead.color]<=3 && myD>=dists[lead.color]+2)? use({color:lead.color}):false; }
     case 'sprint': { return myD>=1 && myD<=3? use(null):false; }      // 冲刺期双行动
@@ -1333,6 +1582,8 @@ function hostApplyAction(p, a){
   }else if (a.type==='itemuse' && a.kind==='confusion'){
     const v = players.find(q=>q.color===(a.t||{}).color);
     if (!useConfusionItem(p, v)) return reject('目标无效');
+  }else if (a.type==='itemuse' && a.kind==='shield'){
+    if (!useShieldItem(p)) return reject('护盾无法使用');
   }else if (a.type==='skilluse'){
     const sk = SKILLS.find(s=>s.id===a.id);
     if (!skillsOn) return reject('本局未开启技能');
@@ -1468,17 +1719,28 @@ function draw(now){
   ctx.lineCap='round'; ctx.lineWidth=WT;
   for(const key of wallsH){
     const[a,b]=key.split(',').map(Number);
-    const col = COLORS[paintOf(wallOwner['h '+key])]?.main || '#7f8db0';
-    ctx.strokeStyle=col; ctx.shadowColor=col; ctx.shadowBlur=7;
+    const fw = fireWalls.some(q=>q.kind==='h'&&q.x===a&&q.y===b);   // 🔥 烈阳火墙：橙红燃烧
+    const col = fw ? '#ff8b3d' : (COLORS[paintOf(wallOwner['h '+key])]?.main || '#7f8db0');
+    ctx.strokeStyle=col; ctx.shadowColor=col; ctx.shadowBlur= fw ? 12+6*Math.sin(now/110) : 7;
     ctx.beginPath(); ctx.moveTo(px(a),px(b)); ctx.lineTo(px(a+2),px(b)); ctx.stroke();
   }
   for(const key of wallsV){
     const[a,b]=key.split(',').map(Number);
-    const col = COLORS[paintOf(wallOwner['v '+key])]?.main || '#7f8db0';
-    ctx.strokeStyle=col; ctx.shadowColor=col; ctx.shadowBlur=7;
+    const fw = fireWalls.some(q=>q.kind==='v'&&q.x===a&&q.y===b);   // 🔥 烈阳火墙：橙红燃烧
+    const col = fw ? '#ff8b3d' : (COLORS[paintOf(wallOwner['v '+key])]?.main || '#7f8db0');
+    ctx.strokeStyle=col; ctx.shadowColor=col; ctx.shadowBlur= fw ? 12+6*Math.sin(now/110) : 7;
     ctx.beginPath(); ctx.moveTo(px(a),px(b)); ctx.lineTo(px(a),px(b+2)); ctx.stroke();
   }
   ctx.shadowBlur=0;
+  // 🔥 烈阳火墙：橙焰标记（无主之火，烧尽即灭）
+  for(const f of fireWalls){
+    const mx = f.kind==='h'? px(f.x+1) : px(f.x), my = f.kind==='h'? px(f.y) : px(f.y+1);
+    ctx.save();
+    ctx.globalAlpha=0.75+0.25*Math.sin(now/150+f.x*1.7+f.y);
+    ctx.font=Math.floor(CELL*0.36)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('🔥', mx, my);
+    ctx.restore();
+  }
 
   // 触屏待确认墙位：高亮预览（方向 + 两格跨度 + 受影响格子淡光）
   if (pendingWall && cp && cp.human && !busy){
@@ -1552,6 +1814,19 @@ function draw(now){
     }
   }
 
+  // 🕳️ 地陷塌陷格：黑洞 + 紫边闪烁（2 回合后恢复）
+  for(const c of collapsed){
+    const X=px(c.x), Y=px(c.y);
+    ctx.save();
+    ctx.fillStyle='rgba(0,0,0,.78)';
+    rr(X+2,Y+2,CELL-4,CELL-4, Math.max(4,CELL*0.14)); ctx.fill();
+    ctx.strokeStyle='rgba(138,107,255,'+(0.45+0.4*Math.sin(now/240)).toFixed(2)+')'; ctx.lineWidth=2;
+    rr(X+2,Y+2,CELL-4,CELL-4, Math.max(4,CELL*0.14)); ctx.stroke();
+    ctx.globalAlpha=0.9;
+    ctx.font=Math.floor(CELL*0.4)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('🕳️', X+CELL/2, Y+CELL/2+2);
+    ctx.restore();
+  }
   // 宝箱（悬浮 + 呼吸辉光）
   for(const b of boxes){
     const bob = 2.5*Math.sin(now/300 + b.x*1.3 + b.y*0.9);
@@ -1623,6 +1898,10 @@ function draw(now){
       ctx.fillText('🌀', 0, 0);
       ctx.restore();
     }
+    if (p.shield && canSeeShield(p)){       // 🛡️ 护盾生效中：仅使用者可见（左上角）
+      ctx.font=(CELL*0.42)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('🛡️', X-CELL*0.28, Y-CELL*0.28);
+    }
     if (isSyncMode()){                     // 操作点气泡：3格，亮=可用；攒点中变金色
       for(let i=0;i<SYNC_APMAX;i++){
         const f = Math.max(0, Math.min(1, p.ap - i));
@@ -1635,7 +1914,7 @@ function draw(now){
   }
 
   // 特效（openbox 开箱动画较长，单独放宽）
-  fx = fx.filter(f=>now-f.t0 < (f.type==='openbox'?1200:((f.type==='trapgo'||f.type==='stun')?900:500)));
+  fx = fx.filter(f=>now-f.t0 < (f.type==='openbox'?1200:((f.type==='trapgo'||f.type==='stun'||f.type==='shieldpop'||f.type==='sinkhole')?900:(f.type==='dfx'?1100:500))));
   for(const f of fx){
     if (f.type==='boxin'){                // 🎁 宝箱刷新：金色闪现
       const t=(now-f.t0)/450;
@@ -1692,6 +1971,21 @@ function draw(now){
         ctx.fillText(f.icon||'💫', 0, 0);
         ctx.restore();
       }
+    }else if (f.type==='shieldpop'){        // 🛡️ 护盾格挡：金色光环扩散 + 盾徽上浮（全员可见）
+      const t=(now-f.t0)/900;
+      if (t<=1){
+        const X=px(f.x)+CELL/2, Y=px(f.y)+CELL/2;
+        ctx.save();
+        ctx.globalAlpha=(1-t)*0.9;
+        ctx.strokeStyle='#fdca00'; ctx.lineWidth=3;
+        ctx.beginPath(); ctx.arc(X, Y, CELL*(0.3+0.55*t), 0, 7); ctx.stroke();
+        ctx.lineWidth=1.5;
+        ctx.beginPath(); ctx.arc(X, Y, CELL*(0.18+0.45*t), 0, 7); ctx.stroke();
+        ctx.globalAlpha=t<0.15?t/0.15:(1-t)/0.85;
+        ctx.font=(CELL*0.5)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText('🛡️', X, Y-CELL*0.5*t);
+        ctx.restore();
+      }
     }else if (f.type==='wallpop'){
       const t=(now-f.t0)/300, e=1-Math.pow(1-Math.min(1,t),2);
       ctx.save(); ctx.globalAlpha=(1-t)*0.7;
@@ -1730,6 +2024,81 @@ function draw(now){
         ctx.beginPath(); ctx.arc(px(f.x)+CELL/2, px(f.y)+CELL/2, CELL*(0.3+0.7*t), 0, 7); ctx.stroke();
         ctx.beginPath(); ctx.arc(px(f.x)+CELL/2, px(f.y)+CELL/2, CELL*(0.15+0.5*t), 0, 7); ctx.stroke();
         ctx.restore();
+      }
+    }else if (f.type==='sinkhole'){         // 🕳️ 地陷：黑洞张口 / 恢复回弹
+      const t=(now-f.t0)/900;
+      if (t<=1){
+        const X=px(f.x)+CELL/2, Y=px(f.y)+CELL/2;
+        ctx.save();
+        if (f.up){                          // 恢复：紫光回填 + ✨
+          ctx.globalAlpha=(1-t)*0.85;
+          ctx.strokeStyle='#8a6bff'; ctx.lineWidth=3;
+          ctx.beginPath(); ctx.arc(X, Y, CELL*(0.5-0.3*t), 0, 7); ctx.stroke();
+          ctx.font=(CELL*0.4)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+          ctx.fillText('✨', X, Y);
+        }else{                              // 塌陷：黑洞张口
+          const gr=Math.min(1, t*2.5);
+          ctx.globalAlpha=Math.min(1, t*5)*(1-t*0.3);
+          ctx.fillStyle='#000';
+          ctx.beginPath(); ctx.arc(X, Y, CELL*(0.15+0.33*gr), 0, 7); ctx.fill();
+          ctx.strokeStyle='#8a6bff'; ctx.lineWidth=2.5;
+          ctx.beginPath(); ctx.arc(X, Y, CELL*(0.2+0.34*gr), 0, 7); ctx.stroke();
+        }
+        ctx.restore();
+      }
+    }else if (f.type==='sunfx'){            // ☀️ 火墙点燃：橙红闪光
+      const t=(now-f.t0)/500;
+      if (t<=1){
+        ctx.save(); ctx.globalAlpha=(1-t)*0.9;
+        ctx.strokeStyle='#ffb066'; ctx.lineWidth=WT+8*(1-t); ctx.lineCap='round';
+        ctx.beginPath();
+        if(f.kind==='h'){ ctx.moveTo(px(f.x),px(f.y)); ctx.lineTo(px(f.x+2),px(f.y)); }
+        else{ ctx.moveTo(px(f.x),px(f.y)); ctx.lineTo(px(f.x),px(f.y+2)); }
+        ctx.stroke(); ctx.restore();
+      }
+    }else if (f.type==='dfx'){              // ☄️ 天灾屏幕级特效（本地与远端事件共用）
+      const t=(now-f.t0)/1100;
+      if (t<=1){
+        if (f.kind==='acid' || f.kind==='rain'){    // ☔🌧️ 酸雨/暴雨：全屏斜雨丝
+          ctx.save(); ctx.globalAlpha=(1-t)*0.55;
+          ctx.strokeStyle = f.kind==='acid' ? '#9be07a' : '#7fb2ff';
+          ctx.lineWidth=1.5; ctx.beginPath();
+          for(let i=0;i<46;i++){
+            const sx=(i*173.3+i*i*7.7)%boardPx;
+            const sy=((i*97.1)%boardPx + t*boardPx*1.7)%(boardPx+60)-30;
+            ctx.moveTo(sx,sy); ctx.lineTo(sx-7,sy+18);
+          }
+          ctx.stroke(); ctx.restore();
+        }else if (f.kind==='thunder'){              // ⚡ 暴雷：象限高亮 + 白闪 + ⚡
+          ctx.save();
+          if (t<0.15){ ctx.fillStyle='rgba(255,255,255,'+(0.5*(1-t/0.15)).toFixed(2)+')'; ctx.fillRect(0,0,boardPx,boardPx); }
+          ctx.globalAlpha=(1-t)*0.28;
+          ctx.fillStyle='#aee7ff'; ctx.fillRect(px(f.x), px(f.y), CELL*f.w, CELL*f.w);
+          ctx.globalAlpha=(1-t)*0.85;
+          ctx.strokeStyle='#dff4ff'; ctx.lineWidth=3;
+          ctx.strokeRect(px(f.x), px(f.y), CELL*f.w, CELL*f.w);
+          ctx.globalAlpha=t<0.5?1:(1-t)/0.5;
+          ctx.font=(CELL*1.3)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+          ctx.fillText('⚡', px(f.x)+CELL*f.w/2, px(f.y)+CELL*f.w/2);
+          ctx.restore();
+        }else if (f.kind==='sun'){                  // ☀️ 烈阳：橙光罩顶
+          ctx.save();
+          const og=ctx.createLinearGradient(0,0,0,boardPx);
+          og.addColorStop(0,'rgba(255,157,61,.5)'); og.addColorStop(1,'rgba(255,157,61,0)');
+          ctx.globalAlpha=1-t; ctx.fillStyle=og; ctx.fillRect(0,0,boardPx,boardPx);
+          ctx.globalAlpha=t<0.5?1:(1-t)/0.5;
+          ctx.font=(CELL*1.2)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+          ctx.fillText('☀️', boardPx/2, CELL*0.9);
+          ctx.restore();
+        }else if (f.kind==='bang'){                 // 💥 大爆炸：白闪 + 冲击环
+          ctx.save();
+          if (t<0.18){ ctx.fillStyle='rgba(255,255,255,'+(0.75*(1-t/0.18)).toFixed(2)+')'; ctx.fillRect(0,0,boardPx,boardPx); }
+          ctx.globalAlpha=1-t;
+          ctx.strokeStyle='#ffc478'; ctx.lineWidth=5+9*(1-t);
+          ctx.beginPath(); ctx.arc(boardPx/2, boardPx/2, 20+t*boardPx*0.85, 0, 7); ctx.stroke();
+          if (t<0.5){ ctx.font=(CELL*1.3)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText('💥', boardPx/2, boardPx/2); }
+          ctx.restore();
+        }
       }
     }
   }
@@ -1916,6 +2285,15 @@ function clickInvSlot(p, i){          // 点击道具箱：🧱 +1 墙；🔨 �
       logPush('使用 🔋 技能恢复卡，技能已刷新', p.color);
       toast('🔋 技能使用次数已恢复');
     }
+  }else if (kind==='shield'){
+    if (p.shield){ toast('护盾已在生效中'); return; }
+    if (isOnline()){
+      if (hostSim()) hostApplyAction(p, {type:'itemuse', kind:'shield'});
+      else { busy=true; setTimeout(()=>{busy=false;},2500); netSend({t:'act', a:{type:'itemuse', kind:'shield'}}); }
+    }else{
+      useShieldItem(p);
+      toast('🛡️ 护盾已激活：将免疫 1 次敌方技能或陷阱');
+    }
   }else if (kind==='trap' || kind==='confusion'){
     if (pendingItem===kind){ pendingItem=null; renderPanel(); return; }   // 再点一次取消
     pendingItem=kind;
@@ -1954,23 +2332,25 @@ function syncSelects(){
   document.getElementById('wallSel').value = String(wallStock);
   document.getElementById('itemSel').value = String(itemsOn?itemInterval:0);
   document.getElementById('skillSel').value = skillsOn? '1':'0';
+  document.getElementById('disasterSel').value = disastersOn? '1':'0';
   document.getElementById('btnSpeed').textContent = fastAI? '⚡ 极速' : '⚡ 正常';
 }
 function refreshHint(){
   const itemLine = itemsOn
-    ? '<b>道具开启</b>：棋盘每隔几秒出现 🎁 宝箱，走上去拾取（道具箱上限2）——🧱 +1 堵墙；🔨 砸碎一堵墙；🔋 恢复技能；🪤 埋陷阱；🌀 混乱对手；💫 开箱即中眩晕。<br>'
+    ? '<b>道具开启</b>：棋盘每隔几秒出现 🎁 宝箱，走上去拾取（道具箱上限2）——🧱 +1 堵墙；🔨 砸碎一堵墙；🔋 恢复技能；🪤 埋陷阱；🌀 混乱对手；🛡️ 免疫 1 次技能/陷阱；💫 开箱即中眩晕。<br>'
     : '';
   const touchLine = touchMode ? '📱 <b>触屏放墙</b>：点格线先出预览，再点一次确认；点格子直接走子。<br>' : '';
+  const disLine = disastersOn ? '☄️ <b>天灾开启</b>：每 3 回合（同步模式每 12 次行动）随机降临 ☔ 酸雨蚀墙、⚡ 暴雷眩晕、🕳️ 地陷塌方、🌧️ 暴雨冲走道具（+1 行动）、☀️ 烈阳火墙、💥 大爆炸洗牌。<br>' : '';
   document.getElementById('hint').innerHTML = isSyncMode()
     ? '<b>同步模式</b>：没有回合，所有人同时行动！<br>'+
       '每人 <b>3 个操作点</b>（上限3）：走一步 / 放一堵墙各耗 1 点。<br>'+
       '动作间隔 <b>0.5 秒</b>，每秒恢复 1 点。<br>'+
-      itemLine+touchLine+
+      itemLine+disLine+touchLine+
       '先踏上中央 👑 王座者获胜'+(mode==='syncspec'?'。4 个 AI 实时互坑，会攒点蓄力、满点连发':'——AI 会攒点蓄力、满点连发，手速与规划并重！')
     : '<b>每回合二选一</b><br>'+
       '① 点击相邻格子 = 走一步（可跳过贴脸的棋子）<br>'+
       '② 点击格线缝隙 = 放一堵墙（占2格，永久，自己颜色）<br>'+
-      itemLine+
+      itemLine+disLine+
       '<b>获胜</b>：第一个踏上中央 👑 王座。<br>'+
       '墙不能穿过、不能重叠，也不许把任何人<b>彻底堵死</b>。<br>'+touchLine;
 }
@@ -2003,6 +2383,9 @@ function serializeState(){
     wallsH: [...wallsH], wallsV: [...wallsV], wallOwner,
     boxes: boxes.map(b=>({x:b.x, y:b.y, i:b.i})),
     traps: traps.map(t=>({x:t.x, y:t.y, o:t.o})),
+    disastersOn,
+    collapsed: collapsed.map(c=>({x:c.x, y:c.y, end:c.end})),
+    fireWalls: fireWalls.map(f=>({kind:f.kind, x:f.x, y:f.y, end:f.end})),
     turnIdx, turnCount, passStreak,
     winner: winner==null ? null : (winner==='draw' ? 'draw' : winner.color),
     draft: draft? {offers:draft.offers, picked:draft.picked} : null,
@@ -2011,7 +2394,7 @@ function serializeState(){
       walls:p.walls, left:p.left, ai:p.ai, human:p.human,
       inv:[...p.inv], sk:p.skill, sku:p.skillUsed?1:0,
       fzt:p.frozenTurns, fzu:Math.round(p.frozenUntil), exa:p.extraActs, pt:p.paint,
-      cnf:p.confused?1:0, stn:p.stunTag?1:0,
+      cnf:p.confused?1:0, stn:p.stunTag?1:0, shd:p.shield?1:0, rb:p.rainBoost?1:0,
       ap:Math.round(p.ap*100)/100,
     })),
     now: performance.now(),
@@ -2031,6 +2414,12 @@ function applySnapshot(s, ev){
   wallOwner = { ...s.wallOwner };
   boxes = (s.boxes||[]).map(b=>({x:b.x, y:b.y, i:b.i}));
   traps = (s.traps||[]).map(t=>({x:t.x, y:t.y, o:t.o}));
+  const prevColl = new Set(collapsed.map(c=>c.x+','+c.y));      // 快照 diff：消失的塌陷格 = 已恢复（远端补播 ✨ 动画）
+  collapsed = (s.collapsed||[]).map(c=>({x:c.x, y:c.y, end:c.end}));
+  fireWalls = (s.fireWalls||[]).map(f=>({kind:f.kind, x:f.x, y:f.y, end:f.end}));
+  for (const c of collapsed) prevColl.delete(c.x+','+c.y);
+  for (const k of prevColl){ const [x,y]=k.split(',').map(Number); fx.push({type:'sinkhole', x, y, up:true, t0:performance.now()}); }
+  disastersOn = s.disasters!==false;
   turnIdx = s.turnIdx; turnCount = s.turnCount; passStreak = s.passStreak;
   itemClock = 0;
   draft = s.draft ? {offers:s.draft.offers, picked:s.draft.picked} : null;
@@ -2044,7 +2433,7 @@ function applySnapshot(s, ev){
       frozenTurns: sp.fzt||0,
       frozenUntil: sp.fzu ? performance.now() + Math.max(0, sp.fzu - hostNow) : 0,   // 主机时钟 → 本地时钟
       extraActs: sp.exa||0, paint: sp.pt||null,
-      confused: !!sp.cnf, stunTag: !!sp.stn,
+      confused: !!sp.cnf, stunTag: !!sp.stn, shield: !!sp.shd, rainBoost: !!sp.rb,
       ap: sp.ap!=null ? sp.ap : SYNC_APMAX,
       lastAct: performance.now() - Math.max(0, hostNow - (sp.lastAct || hostNow)),  // 换算到本地时钟
       tween:null, bank:false, burstLeft:0, nextThink:0,
@@ -2073,8 +2462,15 @@ function applyEvent(e){
     case 'boxspawn': fx.push({type:'boxin', x:e.x, y:e.y, t0:now}); break;
     case 'boxopen': fx.push({type:'openbox', x:e.x, y:e.y, i:e.i, t0:now}); sPick(); break;
     case 'trapgo': { fx.push({type:'trapgo', x:e.x, y:e.y, t0:now}); sSmash(); toast('💥 有人踩中陷阱，掉回出生点！'); break; }
+    case 'disaster': {                              // 天灾屏幕特效（状态本身走快照，这里只播表现）
+      const {type, ...rest} = e;                   // 剔除 type:'disaster'，防其覆盖 fx 的 type:'dfx'
+      disasterFx(e.kind, rest);
+      if (e.kind==='sink') for (const [x,y] of (e.cells||[])) fx.push({type:'sinkhole', x, y, t0:now});
+      break;
+    }
     case 'stunfx': { const q=players.find(x=>x.color===e.color); if (q) fx.push({type:'stun', x:q.cell.x, y:q.cell.y, t0:now}); sBad(); break; }
     case 'confusefx': { const q=players.find(x=>x.color===e.color); if (q) fx.push({type:'stun', x:q.cell.x, y:q.cell.y, t0:now, icon:'🌀'}); break; }
+    case 'shieldfx': { const q=players.find(x=>x.color===e.color); if (q) fx.push({type:'shieldpop', x:q.cell.x, y:q.cell.y, t0:now}); sPick(); break; }
     case 'pass': toast(COLORS[e.color].name+' 无路可走，跳过'); break;
     case 'reject': toast(e.text); sBad(); break;
     case 'log': logAppend(e.text, e.color); break;
@@ -2115,6 +2511,7 @@ function newOnlineGame(seats, settings){
   wallStock = settings.walls;
   itemsOn = settings.items>0; itemInterval = settings.items||5;
   skillsOn = settings.skills!==false;
+  disastersOn = settings.disasters!==false;
   wallsH.clear(); wallsV.clear(); wallOwner = {};
   players = ['blue','green','red','orange'].map(c=>{
     const meta = (seats||[]).find(s=>s.seat===c);
@@ -2126,11 +2523,14 @@ function newOnlineGame(seats, settings){
       tween:null, ap:SYNC_APMAX, lastAct:performance.now(), nextThink:0, bank:false, burstLeft:0,
       inv:[], skill:null, skillUsed:false, skillOffer:[],
       frozenTurns:0, frozenUntil:0, extraActs:0, paint:null,
+      shield:false,
+      rainBoost:false,
     };
   });
   turnIdx = Math.floor(rnd()*4);
   winner = null; busy = false; turnCount = 0; passStreak = 0;
   itemClock = 0; boxes = []; traps = [];
+  collapsed = []; fireWalls = [];            // 天灾残留清空
   logLines = [];
   logPush('🏁 新对局开始，抢座大战一触即发', null);
   confetti = []; fx = []; toastMsg = null; pendingWall = null;
@@ -2145,7 +2545,7 @@ function netStartRound(){
   let sync, watch;
   if (sel){ const v = sel.value; sync = v.includes('1'); watch = v.startsWith('w'); }
   else { sync = isSyncMode(); watch = netWatch; }     // 对局中重开：沿用本局设置
-  netSend({ t:'start', settings:{ sync, watch, size:N, walls:wallStock, items: itemsOn?itemInterval:0, skills: skillsOn } });
+  netSend({ t:'start', settings:{ sync, watch, size:N, walls:wallStock, items: itemsOn?itemInterval:0, skills: skillsOn, disasters: disastersOn } });
 }
 
 /* ---- 连接与房间 UI ---- */
@@ -2362,7 +2762,7 @@ function showRules(first){
       <b>第一个踏上中央王座 👑 的人获胜。</b><br>
       规则保护：不许放墙把任何玩家彻底堵死——谁都得起码留一条活路。<br>
       <b>同步模式</b>：取消回合，四人同时行动。每人 3 个操作点（上限3），走子/放墙各耗 1 点，动作间隔 0.5 秒，每秒恢复 1 点。<br>
-      <b>道具模式</b>（设置里开启）：棋盘每隔几秒随机出现 🎁 宝箱，走上去拾取后开出随机道具（道具箱上限 2 个）：🧱 +1 堵墙；🔨 击碎任意一堵墙；🔋 恢复技能次数 1 次；🪤 埋陷阱（仅自己可见，踩中者掉回出生点）；🌀 混乱对手（其下一步方向上下左右颠倒）；💫 眩晕（开箱即触发，拾取者暂停 1 回合）。免费即时，不耗操作点。<br>
+      <b>道具模式</b>（设置里开启）：棋盘每隔几秒随机出现 🎁 宝箱，走上去拾取后开出随机道具（道具箱上限 2 个）：🧱 +1 堵墙；🔨 击碎任意一堵墙；🔋 恢复技能次数 1 次；🪤 埋陷阱（仅自己可见，踩中者掉回出生点）；🌀 混乱对手（其下一步方向上下左右颠倒）；🛡️ 保护卡（激活后免疫 1 次敌方指向性技能或陷阱，护盾状态仅自己可见）；💫 眩晕（开箱即触发，拾取者暂停 1 回合）。免费即时，不耗操作点。<br>
       <b>技能</b>（设置里开启）：开局每人从随机抽出的 3 个候选中选 1 个，整局限用 1 次。点击面板上的技能图标释放，免费即时（不耗回合/操作点；经典模式限自己回合内；被 ❄️ 定身时不可用）。<br>
       没有队友，没有谈判。<b>4位玩家，1位赢家，0个朋友。</b>
     </div>
@@ -2411,6 +2811,10 @@ document.getElementById('itemSel').onchange = function(){
 document.getElementById('skillSel').onchange = function(){
   if (isOnline() && !hostSim()){ this.value = skillsOn? '1':'0'; return; }
   skillsOn = this.value==='1'; refreshHint();
+};
+document.getElementById('disasterSel').onchange = function(){
+  if (isOnline() && !hostSim()){ this.value = disastersOn? '1':'0'; return; }
+  disastersOn = this.value==='1'; refreshHint();
 };
 
 /* ================= 启动 ================= */

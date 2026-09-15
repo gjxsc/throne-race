@@ -203,7 +203,9 @@
       </select>
       <div style="height:8px"></div>
       <select id="disasterSel">
-        <option value="1" selected>天灾：每 3 回合降临</option>
+        <option value="3" selected>天灾：每 3 回合降临</option>
+        <option value="10">天灾：每 10 回合降临</option>
+        <option value="20">天灾：每 20 回合降临</option>
         <option value="0">天灾：关闭</option>
       </select>
       <div style="height:8px"></div>
@@ -286,7 +288,7 @@ let players = [];
 let turnIdx = 0, winner = null, busy = false, turnCount = 0, passStreak = 0;
 let mode = 'pve', wallStock = 8, muted = false, fastAI = false;
 let itemsOn = false, itemInterval = 5, itemClock = 0;   // 道具系统：定时发到玩家道具箱
-let disastersOn = true;                         // 天灾系统：每 3 回合降下随机场地天灾
+let disastersOn = true, disasterInterval = 3;     // 天灾系统：每 N 回合降下随机场地天灾
 let collapsed = [], fireWalls = [];             // 地陷：塌陷格 {x,y,end} / 烈阳：火墙 {kind,x,y,end}（end=到期回合数）
 let skillsOn = true;                            // 技能系统开关
 let pendingSkill = null, pendingItem = null;    // 目标选择中：待确认的技能/道具
@@ -323,7 +325,7 @@ if (Q.get('walls') && qw>=1) wallStock = Math.min(20, qw);
 if (Q.get('size')){ const n=+Q.get('size'); if([9,11,13,15].includes(n)) setBoardSize(n); }
 if (Q.get('item')){ const v=+Q.get('item'); if([3,5,7,10].includes(v)){ itemsOn=true; itemInterval=v; } }
 if (Q.get('skill')==='0') skillsOn = false;
-if (Q.get('disaster')==='0') disastersOn = false;
+if (Q.get('disaster')==='0'){ disastersOn = false; } else if (Q.get('disaster')){ const di=+Q.get('disaster'); if([3,10,20].includes(di)){ disasterInterval=di; } }
 if (Q.get('fast') === '1') fastAI = true;
 srand(Q.get('seed') ? +Q.get('seed') : ((Date.now()*2654435761)>>>0));
 
@@ -788,9 +790,9 @@ function expireDisasters(){                 // 天灾到期结算（仅主机/�
     logPush('🕳️ '+cOut.length+' 个塌陷格恢复如初', null);
   }
 }
-function maybeDisaster(){                    // 天灾调度：经典每 3 手 / 同步每 12 次行动（≈4 人各 3 手）
+function maybeDisaster(){                    // 天灾调度：经典每 N 手 / 同步每 N*4 次行动
   if (!disastersOn || winner || !hostSim()) return;
-  const every = isSyncMode() ? 12 : 3;
+  const every = isSyncMode() ? disasterInterval*4 : disasterInterval;
   if (turnCount % every !== 0) return;
   const kind = Object.keys(DISASTERS)[Math.floor(rnd()*6)];
   const D = DISASTERS[kind];
@@ -2358,7 +2360,7 @@ function syncSelects(){
   document.getElementById('wallSel').value = String(wallStock);
   document.getElementById('itemSel').value = String(itemsOn?itemInterval:0);
   document.getElementById('skillSel').value = skillsOn? '1':'0';
-  document.getElementById('disasterSel').value = disastersOn? '1':'0';
+  document.getElementById('disasterSel').value = disastersOn? String(disasterInterval) : '0';
   document.getElementById('btnSpeed').textContent = fastAI? '⚡ 极速' : '⚡ 正常';
 }
 function refreshHint(){
@@ -2366,7 +2368,7 @@ function refreshHint(){
     ? '<b>道具开启</b>：棋盘每隔几秒出现 🎁 宝箱，走上去拾取（道具箱上限2）——🧱 +1 堵墙；🔨 砸碎一堵墙；🔋 恢复技能；🪤 埋陷阱；🌀 混乱对手；🛡️ 免疫 1 次技能/陷阱；💫 开箱即中眩晕。<br>'
     : '';
   const touchLine = touchMode ? '📱 <b>触屏放墙</b>：点格线先出预览，再点一次确认；点格子直接走子。<br>' : '';
-  const disLine = disastersOn ? '☄️ <b>天灾开启</b>：每 3 回合（同步模式每 12 次行动）随机降临 ☔ 酸雨蚀墙、⚡ 暴雷眩晕、🕳️ 地陷塌方、🌧️ 暴雨冲走道具（+1 行动）、☀️ 烈阳火墙、💥 大爆炸洗牌。<br>' : '';
+  const disLine = disastersOn ? '☄️ <b>天灾开启</b>：每 '+disasterInterval+' 回合（同步模式每 '+(disasterInterval*4)+' 次行动）随机降临 ☔ 酸雨蚀墙、⚡ 暴雷眩晕、🕳️ 地陷塌方、🌧️ 暴雨冲走道具（+1 行动）、☀️ 烈阳火墙、💥 大爆炸洗牌。<br>' : '';
   document.getElementById('hint').innerHTML = isSyncMode()
     ? '<b>同步模式</b>：没有回合，所有人同时行动！<br>'+
       '每人 <b>3 个操作点</b>（上限3）：走一步 / 放一堵墙各耗 1 点。<br>'+
@@ -2409,7 +2411,7 @@ function serializeState(){
     wallsH: [...wallsH], wallsV: [...wallsV], wallOwner,
     boxes: boxes.map(b=>({x:b.x, y:b.y, i:b.i})),
     traps: traps.map(t=>({x:t.x, y:t.y, o:t.o})),
-    disastersOn,
+    disastersOn, disasterInterval,
     collapsed: collapsed.map(c=>({x:c.x, y:c.y, end:c.end})),
     fireWalls: fireWalls.map(f=>({kind:f.kind, x:f.x, y:f.y, end:f.end})),
     turnIdx, turnCount, passStreak,
@@ -2446,6 +2448,7 @@ function applySnapshot(s, ev){
   for (const c of collapsed) prevColl.delete(c.x+','+c.y);
   for (const k of prevColl){ const [x,y]=k.split(',').map(Number); fx.push({type:'sinkhole', x, y, up:true, t0:performance.now()}); }
   disastersOn = s.disasters!==false;
+  disasterInterval = [3,10,20].includes(s.disasterInterval) ? s.disasterInterval : 3;
   turnIdx = s.turnIdx; turnCount = s.turnCount; passStreak = s.passStreak;
   itemClock = 0;
   draft = s.draft ? {offers:s.draft.offers, picked:s.draft.picked} : null;
@@ -2538,6 +2541,7 @@ function newOnlineGame(seats, settings){
   itemsOn = settings.items>0; itemInterval = settings.items||5;
   skillsOn = settings.skills!==false;
   disastersOn = settings.disasters!==false;
+  disasterInterval = [3,10,20].includes(settings.disasterInterval) ? settings.disasterInterval : 3;
   wallsH.clear(); wallsV.clear(); wallOwner = {};
   players = ['blue','green','red','orange'].map(c=>{
     const meta = (seats||[]).find(s=>s.seat===c);
@@ -2571,7 +2575,7 @@ function netStartRound(){
   let sync, watch;
   if (sel){ const v = sel.value; sync = v.includes('1'); watch = v.startsWith('w'); }
   else { sync = isSyncMode(); watch = netWatch; }     // 对局中重开：沿用本局设置
-  netSend({ t:'start', settings:{ sync, watch, size:N, walls:wallStock, items: itemsOn?itemInterval:0, skills: skillsOn, disasters: disastersOn } });
+  netSend({ t:'start', settings:{ sync, watch, size:N, walls:wallStock, items: itemsOn?itemInterval:0, skills: skillsOn, disasters: disastersOn, disasterInterval } });
 }
 
 /* ---- 连接与房间 UI ---- */
@@ -2839,8 +2843,11 @@ document.getElementById('skillSel').onchange = function(){
   skillsOn = this.value==='1'; refreshHint();
 };
 document.getElementById('disasterSel').onchange = function(){
-  if (isOnline() && !hostSim()){ this.value = disastersOn? '1':'0'; return; }
-  disastersOn = this.value==='1'; refreshHint();
+  if (isOnline() && !hostSim()){ this.value = disastersOn? String(disasterInterval) : '0'; return; }
+  const v = +this.value;
+  disastersOn = v > 0;
+  if (v > 0) disasterInterval = v;
+  refreshHint();
 };
 
 /* ================= 启动 ================= */

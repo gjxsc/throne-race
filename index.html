@@ -346,7 +346,7 @@ let skillsOn = true, skillMax = 1;                // 技能系统开关 / 每人
 const SKILL_CD = 5;                               // ⏳ 技能冷却：释放后自己完成 5 次行动才可再用（skillCd 每次自己走子/放墙 -1，0=就绪）
 let pendingSkill = null, pendingItem = null;    // 目标选择中：待确认的技能/道具
 let skArming = null;                            // 左栏技能卡二次确认中：确认发起者的颜色
-let draftTimer = 0, netSkillPicked = false;     // 联机选技：30s 代选定时器 / 本端已提交标记
+let draftTimer = 0, draftCdTimer = 0, netSkillPicked = false;     // 联机选技：30s 代选定时器 / 倒计时刷新 / 本端已提交标记
 let draft = null;                               // 开局选技 {offers:{color:[3个id]}, picked:{color:id}}
 let confetti = [], fx = [], toastMsg = null;
 let logLines = [];                                 // 操作日志：{t:回合数, text, color}
@@ -617,7 +617,7 @@ function showDraft(color){
   const p = players.find(q=>q.color===c); if (!p){ draftDone(); return; }
   const d=document.getElementById('dPanel');
   d.innerHTML = `<h2><span style="color:${COLORS[p.color].main}">●</span> ${COLORS[p.color].name}：选择本局技能</h2>
-    <div class="sub">免费即时 · 整局限用 ${skillMax} 次 · 释放后需自己行动 ${SKILL_CD} 次才可再用 · 全员选完自动开局</div>
+    <div class="sub">免费即时 · 整局限用 ${skillMax} 次 · 释放后需自己行动 ${SKILL_CD} 次才可再用 · 全员选完自动开局${draft.deadline?` · <b id="draftCd" style="color:#ff9aa8"></b>`:''}</div>
     <div class="skrow">`+
     draft.offers[p.color].map(id=>{
       const s=SKILLS.find(x=>x.id===id);
@@ -626,6 +626,19 @@ function showDraft(color){
   document.getElementById('draft').classList.add('show');
   for(const el of d.querySelectorAll('.skcard'))
     el.onclick=()=>onDraftPick(c, el.dataset.id);
+  if (draft.deadline) startDraftCd();
+}
+function startDraftCd(){                     // 选技 30s 倒计时：房主权威计时，客户端随快照里的 deadline 同步显示
+  clearInterval(draftCdTimer);
+  const upd = ()=>{
+    const el = document.getElementById('draftCd');
+    if (!draft || !el){ clearInterval(draftCdTimer); return; }
+    const left = Math.max(0, Math.ceil((draft.deadline - Date.now())/1000));
+    el.textContent = '⏳ '+left+' 秒未选由 AI 代选';
+    if (left<=0) clearInterval(draftCdTimer);
+  };
+  upd();
+  draftCdTimer = setInterval(upd, 500);
 }
 function draftNext(){
   draft.queue = draft.queue.filter(c=>!draft.picked[c]);
@@ -634,6 +647,7 @@ function draftNext(){
   draftDone();
 }
 function draftDone(){
+  clearInterval(draftCdTimer);
   draft = null;
   if (!isSyncMode()){ autoPassIfNeeded(); scheduleAI(); }
 }
@@ -650,6 +664,7 @@ function startDraftOnline(){
     if (p.ai) pickSkill(p, aiPickSkill(p.skillOffer), true);
   }
   netSkillPicked=false;
+  draft.deadline = Date.now()+30000;
   const me = players.find(p=>p.color===myColor && !p.ai && !p.left);
   if (me && !draft.picked[me.color]) showDraft(me.color);   // 房主真人：弹自己的 3 选 1
   else checkNetDraftDone();
@@ -715,7 +730,7 @@ function doMove(p, cell){
     if (p.rainBoost){ p.rainBoost=false; toast('🌧️ 暴雨冲刺：本次行动不耗操作点'); }
     else if (p.camel>0){ p.camel--; if (p.camel===0) dropCamel(p); toast('🐪 骆驼疾行：本次行动不耗操作点（剩 '+p.camel+' 回合）'); }
     else spendAP(p);
-    expireDisasters(); blizzardTick(); desertTick(); wormTick(); volcanoTick(); dragonTick(); maybeDisaster();
+    tickAll();
     renderPanel();
     return;
   }
@@ -868,7 +883,7 @@ function doWall(p, kind, x, y){
   if (isSyncMode()){
     if (p.rainBoost){ p.rainBoost=false; toast('🌧️ 暴雨冲刺：本次行动不耗操作点'); }
     else spendAP(p);
-    expireDisasters(); maybeDisaster();
+    tickAll();
     renderPanel();
     return;
   }
@@ -1290,6 +1305,10 @@ function disasterMudflow(){                 // 🪨 泥石流：随机 1/5 列�
 function disasterFx(kind, extra){            // 天灾屏幕级特效（本地触发与远端 applyEvent 共用；皮肤雨丝色随创建时烙定）
   fx.push({type:'dfx', kind, t0:performance.now(), color:disasterInfo(kind).color, ...extra});
 }
+function tickAll(){                          // 同步模式：环境 tick + 每 4 次行动推进一回合（天灾/火山等按 roundNum 计的机制由此生效；顺序与 nextTurn 一致：tick 用旧回合数，推进在后）
+  expireDisasters(); blizzardTick(); desertTick(); wormTick(); volcanoTick(); dragonTick(); maybeDisaster();
+  if (turnCount % players.length === 0) roundNum++;
+}
 function nextTurn(){
   if (winner) return;
   expireDisasters();                       // 天灾到期结算：地陷恢复 / 火墙熄灭
@@ -1597,7 +1616,7 @@ function aiTurn(){
       for(const q of opps){
         const before=dists[q.color], after=d2[q.color];
         const gain=after-before;
-        if(gain>0){ rawGain+=gain; hurt += gain * (1 + Math.max(0,(6-before))*0.35) * (q===lead?1.4:1); }   // 🎯 拖领先者更值
+        if(gain>0){ rawGain+=gain; hurt += gain * (1 + Math.max(0,(6-before))*0.35) * (q===lead?1.2:1); }   // 🎯 拖领先者更值
       }
       const selfCost = d2[p.color] - myD;              // 正 = 自己的路被这堵墙延长
       if (selfCost > 0 && rawGain <= selfCost*2) continue;   // 自路受损时，拖对手总量必须≥2倍自损才值得
@@ -1766,7 +1785,7 @@ function syncAIDecide(p){
       let hurt=0, rawGain=0;
       for(const q of opps){
         const gain=d2[q.color]-dists[q.color];
-        if(gain>0){ rawGain+=gain; hurt += gain * (1 + Math.max(0,(6-dists[q.color]))*0.35) * (q===lead?1.4:1); }   // 🎯 拖领先者更值
+        if(gain>0){ rawGain+=gain; hurt += gain * (1 + Math.max(0,(6-dists[q.color]))*0.35) * (q===lead?1.2:1); }   // 🎯 拖领先者更值
       }
       const selfCost = d2[p.color] - myD;              // 正 = 自己的路被这堵墙延长
       if (selfCost > 0 && rawGain <= selfCost*2) continue;   // 自路受损时，拖对手总量必须≥2倍自损才值得
@@ -1927,7 +1946,7 @@ function triggerTrap(p, cell){            // 踩中陷阱：塌陷特效 + 掉�
   fx.push({type:'trapgo', x:cell.x, y:cell.y, t0:performance.now()});
   sSmash();
   netEv({type:'trapgo', x:cell.x, y:cell.y});
-  teleport(p, {x:SPAWN[p.color].x, y:SPAWN[p.color].y});
+  spawnDrop(p);
   if (skyfall){ applyStun(p); stHit(p, 'disaster'); }   // 🪤 天降陷阱：掉回出生点并眩晕 1 回合
   toast(skyfall ? '🪤 '+COLORS[p.color].name+' 踩中天降陷阱，掉回出生点并眩晕！'
                 : '💥 '+COLORS[p.color].name+' 踩中陷阱，掉回出生点！');
@@ -3416,7 +3435,7 @@ function serializeState(){
     drg: dragon ? {p:dragon.p, fl:dragon.flown, bu:dragon.breathUntil||0} : null,
     turnIdx, turnCount, passStreak, roundNum,
     winner: winner==null ? null : (winner==='draw' ? 'draw' : winner.color),
-    draft: draft? {offers:draft.offers, picked:draft.picked} : null,
+    draft: draft? {offers:draft.offers, picked:draft.picked, deadline:draft.deadline} : null,
     players: players.map(p=>({
       color:p.color, name:p.name, cell:{x:p.cell.x, y:p.cell.y},
       walls:p.walls, left:p.left, ai:p.ai, human:p.human,
@@ -3464,7 +3483,7 @@ function applySnapshot(s, ev){
   skillMax = [1,3,5,10].includes(s.skillMax) ? s.skillMax : 1;
   turnIdx = s.turnIdx; turnCount = s.turnCount; passStreak = s.passStreak; roundNum = s.roundNum||1;
   itemClock = 0;
-  draft = s.draft ? {offers:s.draft.offers, picked:s.draft.picked} : null;
+  draft = s.draft ? {offers:s.draft.offers, picked:s.draft.picked, deadline:s.draft.deadline} : null;
   const hostNow = s.now || 0;
   players = s.players.map(sp=>{
     const np = {
@@ -3571,7 +3590,7 @@ function newOnlineGame(seats, settings){
     const meta = (seats||[]).find(s=>s.seat===c);
     const occupied = !!meta && !settings.watch;      // 观战局：全员 AI，房主也只围观
     return {
-      color:c, name: occupied ? meta.name : ('AI·'+COLORS[c].name),
+      color:c, name: occupied ? escapeHtml(meta.name) : ('AI·'+COLORS[c].name),   // 🔒 昵称来自远端输入：入口转义一次，下游面板/结算等 innerHTML 出口即全部安全
       cell:{...SPAWN[c]}, walls:wallStock, left:false,
       ai: !occupied, human: occupied,
       tween:null, ap:SYNC_APMAX, lastAct:performance.now(), nextThink:0, bank:false, burstLeft:0,

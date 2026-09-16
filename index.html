@@ -67,6 +67,7 @@
   .islot.mine{ cursor:pointer; border-color:#2c3a63;}
   .islot.mine:hover{ background:#1c2949;}
   .islot.on{ background:#263250; border-color:#4a5f97; box-shadow:0 0 6px rgba(80,120,220,.5);}
+  .islot.empty{ border:1px dashed #2c3a63; color:var(--dim); opacity:.55;}
   .skl{ font-size:13px; }
   .steps{ font-size:11px; color:var(--dim); flex:0 0 auto; text-align:right; white-space:nowrap;}
   button{
@@ -1834,12 +1835,14 @@ function applyStun(p, turns=1){           // 眩晕：暂停 turns 回合（同�
   sBad();
   netEv({type:'stunfx', color:p.color});
 }
-function canSeeTrap(t){                   // 陷阱仅埋设方可见（联机看自己；本地看人类方）
+function canSeeTrap(t){                   // 陷阱仅埋设方可见（联机看自己；本地看人类方；观战上帝视角全可见）
+  if (mode==='spectate' || mode==='syncspec') return true;
   if (isOnline()) return t.o===myColor;
   const o = players.find(p=>p.color===t.o);
   return !!(o && o.human);
 }
-function canSeeShield(p){                 // 护盾状态仅使用者可见（联机看自己；本地看人类方）
+function canSeeShield(p){                 // 护盾状态仅使用者可见（联机看自己；本地看人类方；观战上帝视角全可见）
+  if (mode==='spectate' || mode==='syncspec') return true;
   if (isOnline()) return p.color===myColor;
   return !!p.human;
 }
@@ -3100,12 +3103,22 @@ function renderPanel(){
     const itm=row.querySelector('.itm');
     if (itm){
       const mine = p===localFreeActor() && !winner;
-      itm.innerHTML = p.inv.map((k,i)=>{
-        const it=ITEMS[k]||{icon:'🎁',name:'',desc:''};
-        return `<span class="islot${mine?' mine':''}${pendingItem===k?' on':''}" data-i="${i}" title="${it.name}：${it.desc}">${it.icon}</span>`;
-      }).join('');
-      if (mine) for(const s of itm.querySelectorAll('.islot'))
-        s.onclick = ()=>clickInvSlot(p, +s.dataset.i);
+      if (mode==='spectate'||mode==='syncspec'){   // 观战上帝视角：每个玩家的道具箱全公开（固定容量槽，空槽虚线占位）
+        let cells='';
+        for(let i=0;i<INV_CAP;i++){
+          const k=p.inv[i];
+          const it=k?(ITEMS[k]||{icon:'🎁',name:'',desc:''}):null;
+          cells+=`<span class="islot${k?'':' empty'}" title="${it?it.name+'：'+it.desc:'空槽'}">${it?it.icon:'·'}</span>`;
+        }
+        itm.innerHTML=cells;
+      }else{
+        itm.innerHTML = p.inv.map((k,i)=>{
+          const it=ITEMS[k]||{icon:'🎁',name:'',desc:''};
+          return `<span class="islot${mine?' mine':''}${pendingItem===k?' on':''}" data-i="${i}" title="${it.name}：${it.desc}">${it.icon}</span>`;
+        }).join('');
+        if (mine) for(const s of itm.querySelectorAll('.islot'))
+          s.onclick = ()=>clickInvSlot(p, +s.dataset.i);
+      }
     }
     const skl=row.querySelector('.skl');
     if (skl){

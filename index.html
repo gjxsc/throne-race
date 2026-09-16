@@ -2337,13 +2337,20 @@ function draw(now){
     ctx.fillText('🌪️', px(c.x)+CELL/2, px(c.y)+CELL/2+2);
     ctx.restore();
   }
-  // 🐪 沙漠骆驼：随机游荡的坐骑（走到它格上即骑乘；暖色辉光保证深底上醒目）
+  // 🐪 沙漠骆驼：随机游荡的坐骑（走到它格上即骑乘；实心暖沙底衬，不依赖各系统 emoji 字形的渲染差异）
   for(const c of camels){
     ctx.save();
+    const X=px(c.x), Y=px(c.y);
+    const cg = ctx.createLinearGradient(X,Y,X+CELL,Y+CELL);
+    cg.addColorStop(0,'#f2d8a6'); cg.addColorStop(1,'#d8a45c');
+    ctx.fillStyle=cg;
+    rr(X+3,Y+3,CELL-6,CELL-6, Math.max(4,CELL*0.16)); ctx.fill();
+    ctx.strokeStyle='rgba(255,226,170,.95)'; ctx.lineWidth=2;
+    rr(X+3,Y+3,CELL-6,CELL-6, Math.max(4,CELL*0.16)); ctx.stroke();
     ctx.font=Math.floor(CELL*0.62)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.shadowColor='rgba(255,200,120,.95)'; ctx.shadowBlur=14;
     const bob = Math.sin(now/400 + c.x*1.7 + c.y*0.9)*CELL*0.05;
-    ctx.fillText('🐪', px(c.x)+CELL/2, px(c.y)+CELL/2+2+bob);
+    ctx.fillText('🐪', X+CELL/2, Y+CELL/2+2+bob);
     ctx.restore();
   }
 
@@ -2358,8 +2365,7 @@ function draw(now){
     rr(X+2.5,Y+2.5,CELL-5,CELL-5, Math.max(4,CELL*0.12)); ctx.fill();
     ctx.strokeStyle='rgba(220,242,255,.55)'; ctx.lineWidth=1.5;
     rr(X+2.5,Y+2.5,CELL-5,CELL-5, Math.max(4,CELL*0.12)); ctx.stroke();
-    if (c.hp>1){                                       // 完整冰面：微微反光流动
-      ctx.globalAlpha=0.85+0.15*Math.sin(now/900+c.x+c.y);
+    if (c.hp>1){                                       // 完整冰面：反光流动
       ctx.font=Math.floor(CELL*0.34)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
       ctx.fillText('❄️', X+CELL/2, Y+CELL/2+2);
     }else{                                             // 已裂一次：三道深色锯齿裂纹 + ⚠️ 警示（再被踩一次就碎）
@@ -2504,7 +2510,6 @@ function draw(now){
     }
     const mx = f.kind==='h'? px(f.x+1) : px(f.x), my = f.kind==='h'? px(f.y) : px(f.y+1);
     ctx.save();
-    ctx.globalAlpha=0.85+0.15*Math.sin(now/150+f.x*1.7+f.y);
     ctx.font=Math.floor(CELL*0.42)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText('🔥', mx, my);
     ctx.restore();
@@ -2594,13 +2599,20 @@ function draw(now){
     ctx.fillText('🕳️', X+CELL/2, Y+CELL/2+2);
     ctx.restore();
   }
-  // 宝箱（悬浮 + 呼吸辉光）
+  // 宝箱（实心暗金底衬 + 悬浮 + 呼吸辉光，金边确保深底上醒目）
   for(const b of boxes){
     const bob = 2.5*Math.sin(now/300 + b.x*1.3 + b.y*0.9);
+    const X=px(b.x), Y=px(b.y)+bob;
     ctx.save();
+    const bg = ctx.createLinearGradient(X,Y,X+CELL,Y+CELL);
+    bg.addColorStop(0,'#8a6a1e'); bg.addColorStop(1,'#57400f');
+    ctx.fillStyle=bg;
+    rr(X+3,Y+3,CELL-6,CELL-6, Math.max(4,CELL*0.16)); ctx.fill();
+    ctx.strokeStyle='rgba(253,202,0,.9)'; ctx.lineWidth=2;
+    rr(X+3,Y+3,CELL-6,CELL-6, Math.max(4,CELL*0.16)); ctx.stroke();
     ctx.shadowColor='rgba(253,202,0,.55)'; ctx.shadowBlur=10+4*Math.sin(now/200+b.x);
     ctx.font=Math.floor(CELL*0.62)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText('🎁', px(b.x)+CELL/2, px(b.y)+CELL/2+2+bob);
+    ctx.fillText('🎁', X+CELL/2, Y+CELL/2+2);
     ctx.restore();
   }
   // 自己埋的陷阱（仅埋设方可见）
@@ -2608,7 +2620,6 @@ function draw(now){
     if (!canSeeTrap(t)) continue;
     const bob = 1.5*Math.sin(now/260 + t.x + t.y);
     ctx.save();
-    ctx.globalAlpha=0.85+0.15*Math.sin(now/300);
     ctx.font=Math.floor(CELL*0.42)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText('🪤', px(t.x)+CELL/2, px(t.y)+CELL/2+2+bob);
     ctx.restore();

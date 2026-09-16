@@ -1,8 +1,10 @@
 # 👑 Throne Race · 4位玩家，1位赢家，0个朋友
 
 > 四人抢座 · 墙棋大逃杀。灵感来自 B 站 UP 主 **Toaster_ok** 的视频《[4位玩家，1位赢家，0个朋友](https://www.bilibili.com/video/BV1GoY16qEJD)》。
+>
+> 本仓库参考（fork 自）[breadbot86/throne-race](https://github.com/breadbot86/throne-race)（[原版试玩](https://breadbot86.github.io/throne-race/)），在此之上加入了四关卡地形装饰、天灾系统、闯关模式等大量新玩法。
 
-**▶ 立即游玩：<https://breadbot86.github.io/throne-race/>**
+**▶ 立即游玩本仓库版本：<https://gjxsc.github.io/throne-race/>**
 
 单文件网页游戏，零依赖、零构建，手机/电脑浏览器都能玩。
 
@@ -74,7 +76,7 @@ AI 会按技能强度选技，也会挑时机自动释放（比如穿墙直达�
 无需安装任何东西：
 
 ```bash
-git clone https://github.com/breadbot86/throne-race.git
+git clone https://github.com/gjxsc/throne-race.git
 open throne-race/index.html   # 或直接双击
 ```
 

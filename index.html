@@ -1084,7 +1084,7 @@ function dragonTick(){                      // 🐉 火龙：外围顺时针每�
     if(wallsV.has(K(cx,y))){ removeWall('v',cx,y); burnt++; }
   }
   if(burnt) for(const p of players){ if(!p.left) p.walls+=burnt; }
-  for(let i=0;i<10;i++) spawnBox(14);       // 火龙撒 10 个道具箱（临时放宽上限）
+  for(let i=0;i<5;i++) spawnBox(14);        // 火龙撒 5 个道具箱（临时放宽上限）
   sprayLava(10);                            // 火龙撒 10 格岩浆
   netEv({type:'dragonbreath', cols, hits});
   sBad();
@@ -1337,6 +1337,29 @@ function autoPassIfNeeded(){
   if (winner) return;
   const p = cur();
   if (!hasAnyAction(p)){
+    // 兜底救助：完全被困时尝试随机传送至安全位置
+    const safeCell = randCell((x,y)=>{
+      const tmp={cell:{x,y}, left:false};
+      return legalMoves(tmp).length>0;   // 目标格至少有1步可走
+    });
+    if (safeCell){
+      if (p.ai){
+        // AI：自动传送
+        teleport(p, safeCell);
+        passStreak = 0;
+        sJump();
+        toast(COLORS[p.color].name+' 被困住了，随机传送脱困！');
+        logPush('🧭 '+COLORS[p.color].name+' 被困住了，传送至 ('+safeCell.x+','+safeCell.y+') 脱困', p.color);
+        netEv({type:'rescue', color:p.color, x:safeCell.x, y:safeCell.y});
+        renderPanel();
+        scheduleAI();
+        return;
+      }
+      // 人类玩家：弹窗提示
+      rescuePopup(p, safeCell);
+      return;   // 弹窗回调里继续流程
+    }
+    // 无安全位置可传送 → 跳过
     toast(COLORS[p.color].name+' 无路可走，跳过');
     logPush('无路可走，跳过回合', p.color);
     netEv({type:'pass', color:p.color});
@@ -1346,6 +1369,43 @@ function autoPassIfNeeded(){
     renderPanel();
     autoPassIfNeeded();
   }
+}
+function rescuePopup(p, cell){
+  const c = COLORS[p.color];
+  const ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(4,7,14,.72);backdrop-filter:blur(6px);z-index:100';
+  ov.innerHTML=`<div style="background:linear-gradient(160deg,#121a2e,#0c1220);border:1px solid #27345a;border-radius:16px;padding:20px 28px;text-align:center;max-width:340px">
+    <div style="font-size:28px;margin-bottom:8px">🧭</div>
+    <div style="font-size:15px;font-weight:700;color:${c.main};margin-bottom:6px">${p.name||c.name} 被困住了！</div>
+    <div style="font-size:12.5px;color:var(--dim);margin-bottom:14px">周围没有可走的路，是否传送到随机安全位置？</div>
+    <div style="display:flex;gap:10px;justify-content:center">
+      <button class="primary" id="rvRescue">🧭 传送脱困</button>
+      <button id="rvSkip">跳过回合</button>
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
+  document.getElementById('rvRescue').onclick=()=>{
+    document.body.removeChild(ov);
+    teleport(p, cell);
+    passStreak = 0;
+    sJump();
+    toast(COLORS[p.color].name+' 传送脱困！');
+    logPush('🧭 '+COLORS[p.color].name+' 被困住了，传送至 ('+cell.x+','+cell.y+') 脱困', p.color);
+    netEv({type:'rescue', color:p.color, x:cell.x, y:cell.y});
+    renderPanel();
+    scheduleAI();
+  };
+  document.getElementById('rvSkip').onclick=()=>{
+    document.body.removeChild(ov);
+    toast(COLORS[p.color].name+' 无路可走，跳过');
+    logPush('无路可走，跳过回合', p.color);
+    netEv({type:'pass', color:p.color});
+    passStreak++;
+    if (passStreak >= players.length*2){ endDraw(); return; }
+    turnIdx = (turnIdx+1)%players.length;
+    renderPanel();
+    autoPassIfNeeded();
+  };
 }
 function endDraw(){
   winner = 'draw'; busy = true;
@@ -3462,6 +3522,7 @@ function applyEvent(e){
     case 'confusefx': { const q=players.find(x=>x.color===e.color); if (q) fx.push({type:'stun', x:q.cell.x, y:q.cell.y, t0:now, icon:'🌀'}); break; }
     case 'shieldfx': { const q=players.find(x=>x.color===e.color); if (q) fx.push({type:'shieldpop', x:q.cell.x, y:q.cell.y, t0:now}); sPick(); break; }
     case 'pass': toast(COLORS[e.color].name+' 无路可走，跳过'); break;
+    case 'rescue': { sJump(); toast(COLORS[e.color].name+' 被困住了，传送脱困！'); break; }
     case 'reject': toast(e.text); sBad(); break;
     case 'log': logAppend(e.text, e.color); break;
     case 'aidesk': toast((players.find(q=>q.color===e.color)||{}).name+' 掉线，AI 接管'); break;

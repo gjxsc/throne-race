@@ -337,6 +337,12 @@ let confetti = [], fx = [], toastMsg = null;
 let logLines = [];                                 // 操作日志：{t:回合数, text, color}
 let boxes = [];                                    // 棋盘宝箱：{x, y, i:道具kind}
 let traps = [];                                    // 棋盘陷阱：{x, y, o:埋设者color}（仅埋设方可见）
+let roundStats = null;                             // 🏆 闯关一轮累计统计（跨 4 关）：{color:{sabotage,items,steps,disaster,crowns}}
+function stHit(p, k){ if (roundStats && p && roundStats[p.color]) roundStats[p.color][k]++; }   // 🏆 统计埋点（未开闯关时零开销）
+function resetRoundStats(){
+  roundStats = {};
+  for (const c of ['blue','green','red','orange']) roundStats[c] = {sabotage:0, items:0, steps:0, disaster:0, crowns:0};
+}
 let aiTimer = null;
 const SYNC_CD = 500;      // 同步模式：动作间隔（毫秒）
 const SYNC_APMAX = 3;     // 同步模式：操作点上限
@@ -591,6 +597,8 @@ function newGame(){
   });
   turnIdx = Math.floor(rnd()*4);
   winner = null; busy = false; turnCount = 0; passStreak = 0;
+  if (campaignOn && !isOnline()){ if (!roundStats || levelId===0) resetRoundStats(); }   // 🏆 一轮闯关统计：第 1 关开局=新一轮清零
+  else roundStats = null;
   THRONE.x = THRONE.y = (N-1)/2;         // 王座复位正中（上一局可能被 👑 技能搬走）
   itemClock = 0; boxes = []; traps = [];
   collapsed = []; fireWalls = [];            // 天灾残留清空
@@ -724,6 +732,7 @@ function doMove(p, cell){
   p.tween = {fx:p.cell.x, fy:p.cell.y, t0:performance.now()};
   p.cell = {x:cell.x, y:cell.y};
   passStreak = 0; turnCount++;
+  stHit(p, 'steps');                          // 👟 一轮闯关统计：移动步数
   netEv({type:'move', color:p.color, jump, slide});
   logPush(slide ? '🧊 顺冰面一路滑行 →('+cell.x+','+cell.y+')' : (jump?'跳过一个棋子 →('+cell.x+','+cell.y+')':'走一步 →('+cell.x+','+cell.y+')'), p.color);
   slide ? sSlide() : jump ? sJump() : sMove();
@@ -751,6 +760,7 @@ function useHammer(p, kind, x, y){       // 消耗道具箱里的 🔨 并击碎
   const i = p.inv.indexOf('hammer');
   if (i<0) return false;
   p.inv.splice(i,1);
+  stHit(p, 'items');                          // 🎒 一轮闯关统计：道具使用
   logPush('用 🔨 砸碎一堵墙', p.color);
   execSmashWall(p, kind, x, y);
   return true;
@@ -780,6 +790,7 @@ function teleport(pawn, cell){                 // 传送并带动 90ms 滑动动
 function shieldBlockSkill(p, v, sk){       // 🛡️ 护盾挡下指向性技能：技能照常消耗、效果免疫（特效全员可见）
   v.shield = false;
   p.skillUsed = (p.skillUsed||0)+1;
+  stHit(p, 'sabotage');                     // 🗡️ 一轮闯关统计：坑害出手（被护盾挡下也算）
   fx.push({type:'shieldpop', x:v.cell.x, y:v.cell.y, t0:performance.now()});
   netEv({type:'shieldfx', color:v.color});
   netEv({type:'skill', fx:'pick'});
@@ -816,6 +827,7 @@ function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=�
       p.inv.push(v.inv.pop());
       sPick(); netEv({type:'skill', fx:'pick'});
       toast(COLORS[p.color].name+' 🪓 夺走了 '+COLORS[v.color].name+' 的道具');
+      stHit(p, 'sabotage');                   // 🗡️ 一轮闯关统计：坑害对手
       done = true; break; }
     case 'swap': {                             // 🔄 与目标互换位置
       const v=players.find(q=>q.color===t.color);
@@ -823,14 +835,14 @@ function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=�
       if (v.shield) return shieldBlockSkill(p, v, sk);
       const a={...p.cell}, b={...v.cell};
       teleport(p, b); teleport(v, a);
-      sJump(); netEv({type:'skill', fx:'jump'}); done = true; break; }
+      sJump(); netEv({type:'skill', fx:'jump'}); stHit(p, 'sabotage'); done = true; break; }
     case 'swapcolor': {                        // 🎨 与目标互换显示色（棋子与墙）
       const v=players.find(q=>q.color===t.color);
       if (!v || v===p) return false;
       if (v.shield) return shieldBlockSkill(p, v, sk);
       const da=p.paint||p.color, db=v.paint||v.color;
       p.paint=db; v.paint=da;
-      sPick(); netEv({type:'skill', fx:'pick'}); done = true; break; }
+      sPick(); netEv({type:'skill', fx:'pick'}); stHit(p, 'sabotage'); done = true; break; }
     case 'freeze': {                           // ❄️ 定身：经典=下回合跳过 / 同步=3 秒不能动
       const v=players.find(q=>q.color===t.color);
       if (!v || v===p) return false;
@@ -838,7 +850,7 @@ function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=�
       if (isSyncMode()) v.frozenUntil = performance.now()+3000;
       else v.frozenTurns = 1;
       fx.push({type:'freeze', x:v.cell.x, y:v.cell.y, t0:performance.now()});
-      sPick(); netEv({type:'skill', fx:'pick'}); done = true; break; }
+      sPick(); netEv({type:'skill', fx:'pick'}); stHit(p, 'sabotage'); done = true; break; }
     case 'jump': {                             // 🎲 随机跳跃（落点距王座 ≥4 格）
       const c = randCell((x,y)=>cheb(x,y,THRONE)>=4);
       if (!c) return false;
@@ -855,7 +867,7 @@ function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=�
       if (v.shield) return shieldBlockSkill(p, v, sk);
       const c = randCell();
       if (!c) return false;
-      teleport(v, c); sJump(); netEv({type:'skill', fx:'jump'}); done = true; break; }
+      teleport(v, c); sJump(); netEv({type:'skill', fx:'jump'}); stHit(p, 'sabotage'); done = true; break; }
     case 'sprint': {                           // 🏃 疾跑：经典=本回合多 1 次行动 / 同步=+2 操作点
       if (isSyncMode()) p.ap = Math.min(SYNC_APMAX, p.ap+2);
       else p.extraActs += 1;
@@ -1031,7 +1043,7 @@ function disasterThunder(){                  // ⚡ 暴雷：劈中约 1/4 的�
   for(let y=0;y<N;y++) for(let x=0;x<N;x++) cands.push({x,y});
   const cells = shuffleArr(cands).slice(0, Math.floor(N*N/4)).map(c=>[c.x,c.y]);
   const hits = players.filter(p=>!p.left && cells.some(([x,y])=>p.cell.x===x&&p.cell.y===y));
-  for (const p of hits) applyStun(p);
+  for (const p of hits){ applyStun(p); stHit(p, 'disaster'); }   // 🌪️ 一轮闯关统计：被天灾打中
   logPush(hits.length
     ? '⚡ 暴雷劈中 '+hits.map(p=>COLORS[p.color].name).join('、')+'，眩晕 1 回合'
     : '⚡ 暴雷劈下，无人被击中', null);
@@ -1067,6 +1079,7 @@ function disasterSink(){                     // 🕳️ 地陷：约 1/5 格子�
   for (const p of players){
     if (p.left || !picked.some(c=>c.x===p.cell.x&&c.y===p.cell.y)) continue;
     spawnDrop(p);
+    stHit(p, 'disaster');                     // 🌪️ 一轮闯关统计：被天灾打中
     logPush('🕳️ '+COLORS[p.color].name+' 随地面塌陷掉回出生点', p.color);
   }
   return {cells: picked.map(c=>[c.x,c.y])};
@@ -1077,6 +1090,7 @@ function disasterRain(){                     // 🌧️ 暴雨：冲走所有玩
     if (p.inv.length) logPush('🌧️ 冲走了 '+COLORS[p.color].name+' 身上的 '+p.inv.map(i=>ITEMS[i].icon).join(''), p.color);
     p.inv = [];
     p.rainBoost = true;
+    stHit(p, 'disaster');                     // 🌪️ 一轮闯关统计：被天灾打中（暴雨淋到所有人）
   }
   return {};
 }
@@ -1118,6 +1132,7 @@ function disasterBang(){                     // 💥 大爆炸：王座/玩家/�
     if (!c) break;
     taken.add(c.y*N+c.x);
     teleport(p, c);
+    stHit(p, 'disaster');                     // 🌪️ 一轮闯关统计：被天灾打中（大爆炸全员换位）
   }
   let walls=0;
   for (const s of shuffleArr(allWallSpots().slice())){   // 幸存墙换到全新随机位置（owner 保留）
@@ -1212,20 +1227,101 @@ function endDraw(){
     setTimeout(()=>{ if (winner==='draw' && netWatch && net.phase==='playing') netStartRound(); }, 5000);
   }
 }
+/* ---- 🏆 一轮闯关结算：4 关打完 → 展示选手王冠 → 随机抽 3 规则各赠 1 冠 → 排名 → 开新一轮 ---- */
+const CROWN_RULES = [                       // 4 条规则每轮随机抽 3 条，每条只有累计冠军得 1 👑
+  {icon:'🗡️', name:'坑害之王', desc:'坑害对手最多（技能+陷阱）', key:'sabotage'},
+  {icon:'🎒', name:'道具之王', desc:'使用道具最多',              key:'items'},
+  {icon:'👟', name:'疾步之王', desc:'移动步数最多',              key:'steps'},
+  {icon:'🌪️', name:'天灾之王', desc:'被天灾打中最多',            key:'disaster'},
+];
+function showRoundSettlement(p){
+  const ov=document.getElementById('overlay'), pn=document.getElementById('ovPanel');
+  const st = c => roundStats[c];
+  const base = {}; players.forEach(q=>base[q.color]=st(q.color).crowns);
+  const alive = players.filter(q=>!q.left);
+  const rules = shuffleArr(CROWN_RULES.slice()).slice(0,3);   // 随机抽 3 条规则（种子洗牌）
+  const bonus = rules.map(r=>{
+    const max = Math.max(...alive.map(q=>st(q.color)[r.key]));
+    const tied = max>0 ? alive.filter(q=>st(q.color)[r.key]===max) : [];
+    return {r, w: tied[Math.floor(rnd()*tied.length)] || null, val:max};   // 并列冠军随机取一
+  });
+  const crownOf = (c,k)=> base[c] + bonus.slice(0,k).reduce((n,b)=>n+((b.w&&b.w.color===c)?1:0), 0);
+  const rank = players.slice().sort((a,b)=>crownOf(b.color,3)-crownOf(a.color,3));
+  const medals = ['🥇','🥈','🥉','4️⃣'];
+  const nameOf = q => q.name||COLORS[q.color].name;
+  const cards = k => `<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:12px 0">`+
+    players.map(q=>{
+      const n = crownOf(q.color,k), main = COLORS[q.color].main;
+      return `<div style="flex:1;min-width:84px;padding:10px 4px;border:1px solid ${main}55;border-radius:12px;background:${main}12">
+        <div style="font-weight:700;color:${main};font-size:13px">${nameOf(q)}${q===p?' 👑':''}</div>
+        <div style="font-size:20px;margin:4px 0;letter-spacing:2px">${n?'👑'.repeat(n):'<span style="opacity:.35">—</span>'}</div>
+        <div style="font-size:11px;color:var(--dim)">×${n} 王冠</div>
+      </div>`;
+    }).join('')+`</div>`;
+  const ruleRows = k => bonus.slice(0,k).map(b=>`
+    <div style="margin:6px 0;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.05);font-size:13px;text-align:left">
+      ${b.r.icon} <b>${b.r.name}</b> · ${b.r.desc} →
+      ${b.w? `<b style="color:${COLORS[b.w.color].main}">${nameOf(b.w)}</b>（${b.val} 次）<span style="font-size:16px">+1 👑</span>`
+            : '<span style="color:var(--dim)">本轮无人达成，王冠流拍</span>'}
+    </div>`).join('');
+  let stage = 0, closed = false;
+  function render(){
+    const final = stage>=4;
+    pn.innerHTML = `
+      <h2>🏆 一轮闯关完成！</h2>
+      <div class="sub">第 4 关冠军 ${nameOf(p)} · 4 关鏖战结束，加冕时刻</div>
+      ${cards(final?3:stage)}
+      ${stage>0? ruleRows(stage):''}
+      ${final? `
+        <div style="margin:14px 0 4px;font-size:14px">
+          ${rank.map((q,i)=>`<div style="margin:4px 0">${medals[i]||''} <b style="color:${COLORS[q.color].main}">${nameOf(q)}</b> —— ${crownOf(q.color,3)} 👑</div>`).join('')}
+        </div>
+        <div class="btnrow" style="justify-content:center;margin-top:14px">
+          <button class="primary" id="btnNewRound">开始新一轮闯关</button>
+        </div>
+        ${(mode==='spectate'||mode==='syncspec')?'<div class="ndim" style="margin-top:8px">观战模式 · 片刻后自动开始新一轮</div>':''}`
+      : '<div class="ndim" style="margin-top:8px">🎲 正在抽取规则、颁发王冠…</div>'}`;
+    if (final) document.getElementById('btnNewRound').onclick = ()=>{ closed = true; startNewRound(); };
+  }
+  function tick(){
+    if (closed || winner!==p) return;       // 弹窗作废：已开新局或被接管
+    render();
+    if (stage < 4){ stage++; setTimeout(tick, stage===4?1500:1300); }
+    else if (mode==='spectate' || mode==='syncspec'){
+      setTimeout(()=>{ if (!closed && winner===p) startNewRound(); }, 8000);   // 观战自动循环新一轮
+    }
+  }
+  ov.classList.add('show');
+  tick();
+}
+function startNewRound(){                    // 🏆 新一轮闯关：回第 1 关，统计与王冠重新累计
+  levelId = 0; refreshLevelSel();
+  newGame();
+}
 function endGame(p){
   winner = p; busy = true;
   netEv({type:'win', color:p.color});
   logPush('👑 踏上王座，获得胜利！', p.color);
-  // 🏁 闯关：真人在「当前进度关」取胜才解锁下一关（在线对局不推进闯关进度）
-  let unlocked = false;
-  if (campaignOn && !isOnline() && !p.ai && levelId===campaignProg && campaignProg < LEVELS.length-1){
-    campaignProg++; unlocked = true;
-    try{ localStorage.setItem('tr_campaign', campaignProg); }catch(e){}
-    refreshLevelSel();
-    logPush('🏁 闯关成功，解锁 '+LEVELS[campaignProg].icon+' 第'+(campaignProg+1)+'关 '+LEVELS[campaignProg].name, p.color);
+  // 🏁 闯关：真人（或观战模式下的 AI，替你闯关）在闯关链上取胜才推进（在线对局不推进闯关进度）
+  let unlocked = false, roundDone = false;
+  const chain = campaignOn && !isOnline() && (!p.ai || mode==='spectate' || mode==='syncspec')
+             && (levelId===campaignProg || campaignProg>=LEVELS.length-1);   // 🏆 全通关后：新一轮从第 1 关起每关取胜都推进（无限循环）
+  if (chain){
+    if (levelId === LEVELS.length-1){
+      roundDone = true;                       // 🏆 第 4 关告捷：一轮闯关完成
+    }else if (levelId === campaignProg){
+      campaignProg++; unlocked = true;
+      try{ localStorage.setItem('tr_campaign', campaignProg); }catch(e){}
+      refreshLevelSel();
+      logPush('🏁 闯关成功，解锁 '+LEVELS[campaignProg].icon+' 第'+(campaignProg+1)+'关 '+LEVELS[campaignProg].name, p.color);
+    }
+    stHit(p, 'crowns');                       // 🏆 过关胜者 +1 王冠（一轮 4 关累计）
   }
+  const advanced = chain && !roundDone;       // 过关推进：下一关 = 当前关 + 1
+  const nextLv = advanced ? ((campaignProg>=LEVELS.length-1) ? (levelId+1)%LEVELS.length : campaignProg) : levelId;   // 🏆 下一关：常规=新解锁关；全通关循环模式=顺延 +1（第 4 关由 roundDone 结算接管回第 1 关）
   sWin(); spawnConfetti();
   renderPanel();
+  if (roundDone){ showRoundSettlement(p); return; }   // 🏆 一轮结算弹窗接管（含新一轮按钮 / 观战自动循环）
   const ov=document.getElementById('overlay'), pn=document.getElementById('ovPanel');
   const btns = isOnline()
     ? `<button class="primary" id="btnAgain">${netWatch?'立即下一局':'再来一局'}</button><button id="btnNetExit">离开房间</button>`
@@ -1238,18 +1334,18 @@ function endGame(p){
       ${players.map(q=>`<span style="color:${COLORS[q.color].main}"><i></i>${q.name||COLORS[q.color].name}${q===p?' 👑':''}</span>`).join('')}
     </div>
     <div class="btnrow">${btns}</div>
-    ${unlocked? `<div class="ndim" style="margin-top:8px">🏁 闯关成功！已解锁 ${LEVELS[campaignProg].icon} 第${campaignProg+1}关 ${LEVELS[campaignProg].name}，点「再来一局」继续闯关</div>`:''}
+    ${advanced? `<div class="ndim" style="margin-top:8px">🏁 闯关成功！${unlocked?'已解锁':'进入'} ${LEVELS[nextLv].icon} 第${nextLv+1}关 ${LEVELS[nextLv].name}，${(mode==='spectate'||mode==='syncspec')?'5 秒后自动进入下一关':'点「再来一局」继续闯关'}</div>`:''}
     ${isOnline()&&netWatch?'<div class="ndim" style="margin-top:8px">观战模式 · 5 秒后自动开始下一局</div>':''}`;
   ov.classList.add('show');
   document.getElementById('btnAgain').onclick = ()=>{
     if (isOnline()){ netStartRound(); return; }
-    if (unlocked){ levelId = campaignProg; refreshLevelSel(); }   // 🏁 闯关：直接进下一关
+    if (advanced){ levelId = nextLv; refreshLevelSel(); }   // 🏁 闯关：直接进下一关（循环模式顺延）
     newGame();
   };
   const bw=document.getElementById('btnWatch'); if (bw) bw.onclick = ()=>{ mode='spectate'; newGame(); };
   const bx=document.getElementById('btnNetExit'); if (bx) bx.onclick = ()=>netLeave();
   if (mode==='spectate' || mode==='syncspec'){
-    setTimeout(()=>{ if(winner===p) newGame(); }, 5000);
+    setTimeout(()=>{ if(winner===p){ if (advanced){ levelId = nextLv; refreshLevelSel(); } newGame(); } }, 5000);   // 🏁 闯关解锁：自动进下一关（循环模式顺延）
   }else if (isOnline() && netWatch && hostSim()){
     setTimeout(()=>{ if (winner===p && netWatch && net.phase==='playing') netStartRound(); }, 5000);
   }
@@ -1345,7 +1441,7 @@ function aiUseItems(p){                      // 免费道具：AI 择机自动�
   if (useShieldItem(p)) return true;         // 🛡️ 保护卡：拿到就用（免疫 1 次技能/陷阱）
   const iR = p.inv.indexOf('restore');
   if (iR>=0 && skillsOn && p.skill && (p.skillUsed||0)>0){    // 🔋 技能用过才恢复（次数+1，不超上限）
-    p.inv.splice(iR,1); p.skillUsed=Math.max(0,(p.skillUsed||0)-1);
+    p.inv.splice(iR,1); p.skillUsed=Math.max(0,(p.skillUsed||0)-1); stHit(p, 'items');
     sPick(); renderPanel(); logPush('使用 🔋 技能恢复卡，技能已刷新', p.color);
     return true;
   }
@@ -1564,6 +1660,7 @@ function useTrapItem(p, x, y){            // 埋陷阱：空格、非王座、�
   if (i<0) return false;
   if (!inB(x,y) || pawnAt(x,y) || (x===THRONE.x&&y===THRONE.y) || trapAt(x,y) || boxAt(x,y) || isPillar(x,y) || isCollapsed(x,y)) return false;
   p.inv.splice(i,1);
+  stHit(p, 'items'); stHit(p, 'sabotage');    // 🎒🗡️ 一轮闯关统计：用道具 + 埋陷阱坑害
   traps.push({x, y, o:p.color});
   sPick(); renderPanel();
   logPush('🪤 埋入了一个陷阱', p.color);
@@ -1574,6 +1671,7 @@ function useConfusionItem(p, v){          // 混乱：目标对手下一步方�
   const i = p.inv.indexOf('confusion');
   if (i<0 || !v || v===p || v.left) return false;
   p.inv.splice(i,1);
+  stHit(p, 'items');                          // 🎒 一轮闯关统计：道具使用
   v.confused = true;
   sPick(); renderPanel();
   fx.push({type:'stun', x:v.cell.x, y:v.cell.y, t0:performance.now(), icon:'🌀'});
@@ -1586,6 +1684,7 @@ function useShieldItem(p){                // 保护卡：免疫 1 次敌方指�
   const i = p.inv.indexOf('shield');
   if (i<0 || p.shield) return false;
   p.inv.splice(i,1);
+  stHit(p, 'items');                          // 🎒 一轮闯关统计：道具使用
   p.shield = true;
   sPick(); renderPanel();
   logPush('使用 🛡️ 保护卡，获得 1 次技能/陷阱免疫', p.color, true);   // 保密：仅自己可见
@@ -1861,7 +1960,7 @@ function hostApplyAction(p, a){
   }else if (a.type==='itemuse' && a.kind==='wall'){
     const i = p.inv.indexOf('wall');
     if (i<0) return reject('没有 🧱 道具');
-    p.inv.splice(i,1); p.walls++;
+    p.inv.splice(i,1); p.walls++; stHit(p, 'items');
     logPush('使用 🧱 +1 堵墙', p.color);
     sPick(); renderPanel();
   }else if (a.type==='itemuse' && a.kind==='restore'){
@@ -1869,7 +1968,7 @@ function hostApplyAction(p, a){
     if (i<0) return reject('没有 🔋 恢复卡');
     if (!skillsOn || !p.skill) return reject('本局没有技能，恢复卡用不了');
     if (!(p.skillUsed>0)) return reject('技能还没用过，无需恢复');
-    p.inv.splice(i,1); p.skillUsed=Math.max(0,(p.skillUsed||0)-1);
+    p.inv.splice(i,1); p.skillUsed=Math.max(0,(p.skillUsed||0)-1); stHit(p, 'items');
     logPush('使用 🔋 技能恢复卡，技能已刷新', p.color);
     sPick(); renderPanel();
   }else if (a.type==='itemuse' && a.kind==='trap'){
@@ -2752,7 +2851,7 @@ function clickInvSlot(p, i){          // 点击道具箱：🧱 +1 墙；🔨 �
       if (hostSim()) hostApplyAction(p, {type:'itemuse', kind:'wall'});
       else { busy=true; setTimeout(()=>{busy=false;},2500); netSend({t:'act', a:{type:'itemuse', kind:'wall'}}); }
     }else{
-      p.inv.splice(i,1); p.walls++; sPick(); renderPanel();
+      p.inv.splice(i,1); p.walls++; stHit(p, 'items'); sPick(); renderPanel();
       logPush('使用 🧱 +1 堵墙', p.color);
       toast(COLORS[p.color].name+' 使用 🧱：+1 堵墙');
     }
@@ -2763,7 +2862,7 @@ function clickInvSlot(p, i){          // 点击道具箱：🧱 +1 墙；🔨 �
       if (hostSim()) hostApplyAction(p, {type:'itemuse', kind:'restore'});
       else { busy=true; setTimeout(()=>{busy=false;},2500); netSend({t:'act', a:{type:'itemuse', kind:'restore'}}); }
     }else{
-      p.inv.splice(i,1); p.skillUsed=Math.max(0,(p.skillUsed||0)-1); sPick(); renderPanel();
+      p.inv.splice(i,1); p.skillUsed=Math.max(0,(p.skillUsed||0)-1); stHit(p, 'items'); sPick(); renderPanel();
       logPush('使用 🔋 技能恢复卡，技能已刷新', p.color);
       toast('🔋 技能使用次数已恢复');
     }

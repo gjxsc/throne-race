@@ -268,8 +268,20 @@ function setBoardSize(n){          // 四家出生点到王座始终等距
   N = n; const c = (N-1)/2;
   THRONE.x = THRONE.y = c;
   SPAWN.blue = {x:c,y:0}; SPAWN.green = {x:0,y:c}; SPAWN.red = {x:N-1,y:c}; SPAWN.orange = {x:c,y:N-1};
+  _bfsRebuild();
 }
 const DIRS = [[1,0],[-1,0],[0,1],[0,-1]];
+/* ---- BFS/Dijkstra 预分配缓冲（融合自 upstream）：AI 一回合要跑几十上百次 BFS，每次现分配 TypedArray+元组队列+现拼墙键会产生大量 GC，改为模块级复用，每局只随棋盘尺寸重建 ---- */
+let _reach, _dist, _q, _keys, _fieldCost, _fieldDone;
+function _bfsRebuild(){
+  const n2 = N*N, w = N+2;
+  _reach = new Uint8Array(n2); _dist = new Int16Array(n2); _q = new Int32Array(n2);
+  _fieldCost = new Float32Array(n2); _fieldDone = new Uint8Array(n2);
+  _keys = new Array(w*w);                          // 墙键表外扩 1 圈：x-1/y-1 越界键自然不存在，BFS 热路径免边界判断
+  for(let y=-1;y<=N;y++) for(let x=-1;x<=N;x++) _keys[(y+1)*w+x+1] = x+','+y;
+}
+_bfsRebuild();
+const kk = (x,y)=>_keys[(y+1)*(N+2)+x+1];          // K(x,y) 的查表版：热路径零字符串拼接
 /* ---- 技能池（开局每人随机抽 3 选 1，整局限用 skillMax 次） ---- */
 const SKILLS = [
   {id:'breakwall', icon:'💥', name:'墙面爆破', target:'wall', desc:'击碎棋盘上任意一堵墙'},
@@ -413,25 +425,26 @@ function blocked(x1,y1,x2,y2){
 function pawnAt(x,y){ return players.find(p=>!p.left && p.cell.x===x && p.cell.y===y); }
 function cur(){ return players[turnIdx]; }
 
-function bfsFromThrone(wH, wV, avoidLava){
-  const reach = new Uint8Array(N*N), dist = new Int16Array(N*N).fill(-1);
-  const q=[[THRONE.x,THRONE.y]]; const si=THRONE.y*N+THRONE.x;
-  reach[si]=1; dist[si]=0;
-  for(let h=0;h<q.length;h++){
-    const [x,y]=q[h], d=dist[y*N+x];
+function bfsFromThrone(wH, wV, avoidLava){   // 复用预分配缓冲：两次调用之间持有旧 reach/dist 会被覆盖（调用方均已审计为用完即弃）
+  _reach.fill(0); _dist.fill(-1);
+  let head=0, tail=0;
+  const si=THRONE.y*N+THRONE.x;
+  _reach[si]=1; _dist[si]=0; _q[tail++]=si;
+  while(head<tail){
+    const c=_q[head++], x=c%N, y=(c/N)|0, d=_dist[c];
     for(const[dx,dy]of DIRS){
       const nx=x+dx, ny=y+dy;
       if(!inB(nx,ny) || isCollapsed(nx,ny)) continue;             // 🕳️ 塌陷格视为不可通行（连通性/合法墙位一并感知）
       if (avoidLava && isLava(nx,ny)) continue;                   // 🌋 避岩浆场：岩浆不入图（踩中眩晕亏 1 回合；连通性场仍可踩，防放墙被误拒）
-      if (dx===1)  { if (wV.has(K(nx,y))||wV.has(K(nx,y-1))) continue; }
-      else if(dx===-1){ if (wV.has(K(x,y))||wV.has(K(x,y-1))) continue; }
-      else if(dy===1) { if (wH.has(K(x,ny))||wH.has(K(x-1,ny))) continue; }
-      else            { if (wH.has(K(x,y))||wH.has(K(x-1,y))) continue; }
+      if (dx===1)  { if (wV.has(kk(nx,y))||wV.has(kk(nx,y-1))) continue; }
+      else if(dx===-1){ if (wV.has(kk(x,y))||wV.has(kk(x,y-1))) continue; }
+      else if(dy===1) { if (wH.has(kk(x,ny))||wH.has(kk(x-1,ny))) continue; }
+      else            { if (wH.has(kk(x,y))||wH.has(kk(x-1,y))) continue; }
       const i=ny*N+nx;
-      if(!reach[i]){ reach[i]=1; dist[i]=d+1; q.push([nx,ny]); }
+      if(!_reach[i]){ _reach[i]=1; _dist[i]=d+1; _q[tail++]=i; }
     }
   }
-  return {reach, dist};
+  return {reach:_reach, dist:_dist};
 }
 function everyoneHasPath(wH, wV){
   const {reach} = bfsFromThrone(wH, wV);
@@ -1555,8 +1568,8 @@ function aiTurn(){
   else if (bestWall) aiAct(p,'wall',bestWall);
 }
 function aiField(p){                    // 🤖 AI 个体感知场：地形危险加权、资源打折的 Dijkstra 距离（从王座反向扩散，代价=进入该格）
-  const cost = new Float32Array(N*N).fill(Infinity);
-  const done = new Uint8Array(N*N);
+  const cost = _fieldCost.fill(Infinity);   // 复用预分配缓冲：调用方 bestToward 同步读完毕即弃，无跨调用持有
+  const done = _fieldDone.fill(0);
   const step = (x,y)=>{
     if (isCollapsed(x,y) || isLava(x,y)) return Infinity;        // 🕳️ 塌陷不可入 / 🌋 岩浆不踩（沿用避岩浆语义）
     if (isSandstorm(x,y)) return 5;                              // 🌪️ 暴风：随机传送，大亏
@@ -1895,7 +1908,8 @@ function bestSmash(p){
   let best=null, bestGain=0;
   const d0 = bfsFromThrone(wallsH,wallsV).dist;
   const myD = d0[p.cell.y*N+p.cell.x];
-  const opps = players.filter(q=>q!==p&&!q.left);
+  const opps = players.filter(q=>q!==p&&!q.left)
+                      .map(q=>[q, d0[q.cell.y*N+q.cell.x]]);     // 预读基线距离：下方 d2 复用同一共享缓冲，会覆盖 d0
   const consider=[];
   wallsH.forEach(function(k){ const[a,b]=k.split(',').map(Number); consider.push(['h',a,b]); });
   wallsV.forEach(function(k){ const[a,b]=k.split(',').map(Number); consider.push(['v',a,b]); });
@@ -1905,7 +1919,7 @@ function bestSmash(p){
     const d2 = bfsFromThrone(sH,sV).dist;
     const gain = myD - d2[p.cell.y*N+p.cell.x];
     let oppGain=0;                                  // 砸墙对手也受益：别人沾光比我多就不砸
-    for(const q of opps){ const og=d0[q.cell.y*N+q.cell.x]-d2[q.cell.y*N+q.cell.x]; if(og>oppGain) oppGain=og; }
+    for(const [q,od] of opps){ const og=od-d2[q.cell.y*N+q.cell.x]; if(og>oppGain) oppGain=og; }
     const net = gain - oppGain;
     if (gain>=1 && net>bestGain){ bestGain=net; best=[k,x,y]; }
   }

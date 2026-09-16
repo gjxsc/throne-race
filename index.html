@@ -290,7 +290,7 @@ const LEVELS = [
   {id:'desert',icon:'🏜️', name:'沙漠遗迹',  diff:2, desc:'踩中暴风被卷到随机风暴旁，捉住骆驼骑 5 回合（每回合多走一步）',
    sandstorm:6, camel:1},
   {id:'ice',   icon:'❄️', name:'冰雪峡谷',  diff:3, desc:'冰面被踩两次即碎裂坠回出生点，暴风雪四处游走，同格被弹飞',
-   iceFrac:5, blizzard:6},
+   iceFrac:8, blizzard:6},
   {id:'lava',  icon:'🌋', name:'熔岩天城',  diff:4, desc:'沙漠虫定期砸落弹飞棋子，火山王座喷洒岩浆（踩中眩晕），火龙盘旋喷火',
    worm:4, dragonEvery:50},
 ];
@@ -523,10 +523,10 @@ function generateLevel(){
     for(let i=0;i<lvlCount(L.sandstorm);i++){ const c=lvlTake(taken); if (c) sandstorms.push({x:c.x, y:c.y}); }
     for(let i=0;i<L.camel;i++){ const c=lvlTake(taken); if (c) camels.push({x:c.x, y:c.y}); }
   }
-  if (levelId===2){                     // ❄️ 冰雪峡谷：1/5 格冰面随机散落（全员累计可踩 2 次）+ 暴风雪游走
-    const want = Math.max(1, Math.floor(N*N/(L.iceFrac||5)));
+  if (levelId===2){                     // ❄️ 冰雪峡谷：1/8 格冰面随机散落（全员累计可踩 2 次）+ 暴风雪游走（固定 6 个，不随棋盘缩放）
+    const want = Math.max(1, Math.floor(N*N/(L.iceFrac||8)));
     for(let i=0;i<want;i++){ const c=lvlTake(taken); if (c) iceCells.push({x:c.x, y:c.y, hp:2}); }
-    for(let i=0;i<lvlCount(L.blizzard);i++){ const c=lvlTake(taken); if (c) blizzards.push({x:c.x, y:c.y}); }
+    for(let i=0;i<L.blizzard;i++){ const c=lvlTake(taken); if (c) blizzards.push({x:c.x, y:c.y}); }
   }
   if (levelId===3){                     // 🌋 熔岩天城：4 条沙漠虫分守四边外围 + 火龙起飞 + 火山王座首次下喷倒计时
     const F = isSyncMode() ? 4 : 1;            // 同步模式 turnCount 按行动计，周期 ×4 对齐回合
@@ -1504,7 +1504,9 @@ function aiTurn(){
     if (ms.length){ aiAct(p, 'move', bestToward(p, ms)); return; }
   }
   // 评估放墙
-  let bestWall=null, bestScore=1.6 + rnd()*0.8;
+  const lead = opps.slice().sort((a,b)=>dists[a.color]-dists[b.color])[0];   // 🎯 领先者：重点打击对象
+  const behind = lead && dists[lead.color] < myD;                            // 🎯 我落后：放墙阈值下调，出手更凶
+  let bestWall=null, bestScore=(behind? 1.0 : 1.6) + rnd()*0.8;
   if (p.walls>0){
     const spots = allWallSpots();
     for(let i=spots.length-1;i>0;i--){ const j=Math.floor(rnd()*(i+1)); [spots[i],spots[j]]=[spots[j],spots[i]]; }
@@ -1518,7 +1520,7 @@ function aiTurn(){
       for(const q of opps){
         const before=dists[q.color], after=d2[q.color];
         const gain=after-before;
-        if(gain>0){ rawGain+=gain; hurt += gain * (1 + Math.max(0,(6-before))*0.35); }
+        if(gain>0){ rawGain+=gain; hurt += gain * (1 + Math.max(0,(6-before))*0.35) * (q===lead?1.4:1); }   // 🎯 拖领先者更值
       }
       const selfCost = d2[p.color] - myD;              // 正 = 自己的路被这堵墙延长
       if (selfCost > 0 && rawGain <= selfCost*2) continue;   // 自路受损时，拖对手总量必须≥2倍自损才值得
@@ -1526,7 +1528,7 @@ function aiTurn(){
       if (score>bestScore){ bestScore=score; bestWall=[k,x,y]; }
     }
   }
-  if (!bestWall && minOppD<=2 && p.walls>0){
+  if (!bestWall && minOppD<=3 && p.walls>0){
     // 紧急封堵：对手逼近王座，找一堵“拖住对手且不坑自己”的墙，评分选优
     const spots=allWallSpots().sort(()=>rnd()-0.5);
     let bestGuard=null, bestGuardScore=0;
@@ -1552,11 +1554,48 @@ function aiTurn(){
   if (ms.length) aiAct(p,'move',bestToward(p,ms));
   else if (bestWall) aiAct(p,'wall',bestWall);
 }
+function aiField(p){                    // 🤖 AI 个体感知场：地形危险加权、资源打折的 Dijkstra 距离（从王座反向扩散，代价=进入该格）
+  const cost = new Float32Array(N*N).fill(Infinity);
+  const done = new Uint8Array(N*N);
+  const step = (x,y)=>{
+    if (isCollapsed(x,y) || isLava(x,y)) return Infinity;        // 🕳️ 塌陷不可入 / 🌋 岩浆不踩（沿用避岩浆语义）
+    if (isSandstorm(x,y)) return 5;                              // 🌪️ 暴风：随机传送，大亏
+    if (levelId===2){
+      const ice = iceCells.find(c=>c.x===x&&c.y===y);
+      if (ice) return ice.hp<=1 ? 7 : 1.5;                       // 🧊 快碎的冰≈坠回出生点；完整冰轻代价
+    }
+    if (isBlizzard(x,y)) return 4;                               // 🌨️ 暴风雪：同格弹飞
+    if (levelId===2 && !isBlizzard(x,y)){                        // 🌨️ 邻格轻防：暴风雪每回合先动，可能移过来
+      for(const[dx,dy]of DIRS) if (isBlizzard(x+dx,y+dy)) return 1.6;
+    }
+    if (levelId===1 && !(p.camel>0) && camels.some(c=>c.x===x&&c.y===y)) return 0.3;   // 🐪 骆驼：5 回合 +1 行动，强吸引
+    if (p.inv.length < INV_CAP && boxAt(x,y)) return 0.6;        // 🎁 宝箱：等价允许小绕路拾取
+    return 1;
+  };
+  cost[THRONE.y*N+THRONE.x]=0;
+  for(;;){                          // Dijkstra：N²≤225 节点，线性扫最小值足够快
+    let bi=-1, bd=Infinity;
+    for(let i=0;i<N*N;i++) if(!done[i]&&cost[i]<bd){bd=cost[i];bi=i;}
+    if (bi<0) break;
+    done[bi]=1;
+    const x=bi%N, y=(bi/N)|0;
+    for(const[dx,dy]of DIRS){
+      const nx=x+dx, ny=y+dy;
+      if(!inB(nx,ny)) continue;
+      if (dx===1)  { if (wallsV.has(K(nx,y))||wallsV.has(K(nx,y-1))) continue; }
+      else if(dx===-1){ if (wallsV.has(K(x,y))||wallsV.has(K(x,y-1))) continue; }
+      else if(dy===1) { if (wallsH.has(K(x,ny))||wallsH.has(K(x-1,ny))) continue; }
+      else            { if (wallsH.has(K(x,y))||wallsH.has(K(x-1,y))) continue; }
+      const nc = cost[bi] + step(nx,ny);
+      if (nc < cost[ny*N+nx]) cost[ny*N+nx]=nc;
+    }
+  }
+  return cost;
+}
 function bestToward(p, ms){
-  const {dist}=bfsFromThrone(wallsH,wallsV,true);   // 🌋 避熔岩场选路：熔岩格 dist=-1 自动被跳过
-  let best=ms[0], bd=1e9;
-  for(const c of ms){ const d=dist[c.y*N+c.x]; if(d>=0&&d<bd){bd=d;best=c;} }
-  for(const c of ms){ if (boxAt(c.x,c.y) && dist[c.y*N+c.x]===bd) return c; }   // 🎁 同距不绕路：顺路拾箱
+  const dist = aiField(p);           // 🤖 加权感知场选路：避暴风/碎冰/暴风雪/岩浆，追骆驼/宝箱
+  let best=ms[0], bd=Infinity;
+  for(const c of ms){ const d=dist[c.y*N+c.x]; if(d<bd){bd=d;best=c;} }
   return best;
 }
 function aiUseItems(p){                      // 免费道具：AI 择机自动用（函数内 logPush/netEv 自带联机同步）
@@ -1569,14 +1608,17 @@ function aiUseItems(p){                      // 免费道具：AI 择机自动�
   }
   const dists = allDists();
   const myD = dists[p.color];
-  const lead = players.filter(q=>q!==p && !q.left).sort((a,b)=>dists[a.color]-dists[b.color])[0];
-  if (!lead || dists[lead.color] >= myD) return false;   // 领先者没跑到我前面：留着择机，不盲目出手
-  if (p.inv.indexOf('confusion')>=0 && dists[lead.color]<=5){   // 🌀 混乱领先者
-    if (useConfusionItem(p, lead)) return true;
+  // 🎯 进攻目标：所有跑到我前面的对手，最近的优先打（不只盯全场第一，第二三名逼近照打）
+  const ahead = players.filter(q=>q!==p && !q.left && dists[q.color] < myD)
+                       .sort((a,b)=>dists[a.color]-dists[b.color]);
+  if (!ahead.length) return false;      // 没人跑到我前面：留着择机，不盲目出手
+  const tgt = ahead[0];
+  if (p.inv.indexOf('confusion')>=0 && dists[tgt.color]<=5){   // 🌀 混乱最近威胁
+    if (useConfusionItem(p, tgt)) return true;
   }
-  if (p.inv.indexOf('trap')>=0 && dists[lead.color]<=4){        // 🪤 埋在领先者下一步
+  if (p.inv.indexOf('trap')>=0 && dists[tgt.color]<=4){        // 🪤 埋在最近威胁下一步
     const {dist}=bfsFromThrone(wallsH,wallsV);
-    const cands = legalMoves(lead).sort((a,b)=>dist[a.y*N+a.x]-dist[b.y*N+b.x]);
+    const cands = legalMoves(tgt).sort((a,b)=>dist[a.y*N+a.x]-dist[b.y*N+b.x]);
     for(const c of cands){ if (useTrapItem(p, c.x, c.y)) return true; }
   }
   return false;
@@ -1631,7 +1673,10 @@ function syncAIDecide(p){
   if (aiUseSkill(p)) return true;               // 技能：免费即时，择机自动放
   if (aiUseItems(p)) return true;               // 道具：免费即时，择机自动用
   if (winner) return false;
-  let bestWall=null, bestScore=1.6 + rnd()*0.8;
+  // 评估放墙
+  const lead = opps.slice().sort((a,b)=>dists[a.color]-dists[b.color])[0];   // 🎯 领先者：重点打击对象
+  const behind = lead && dists[lead.color] < myD;                            // 🎯 我落后：放墙阈值下调，出手更凶
+  let bestWall=null, bestScore=(behind? 1.0 : 1.6) + rnd()*0.8;
   if (p.walls>0){
     const spots = allWallSpots();
     for(let i=spots.length-1;i>0;i--){ const j=Math.floor(rnd()*(i+1)); [spots[i],spots[j]]=[spots[j],spots[i]]; }
@@ -1644,13 +1689,34 @@ function syncAIDecide(p){
       let hurt=0, rawGain=0;
       for(const q of opps){
         const gain=d2[q.color]-dists[q.color];
-        if(gain>0){ rawGain+=gain; hurt += gain * (1 + Math.max(0,(6-dists[q.color]))*0.35); }
+        if(gain>0){ rawGain+=gain; hurt += gain * (1 + Math.max(0,(6-dists[q.color]))*0.35) * (q===lead?1.4:1); }   // 🎯 拖领先者更值
       }
       const selfCost = d2[p.color] - myD;              // 正 = 自己的路被这堵墙延长
       if (selfCost > 0 && rawGain <= selfCost*2) continue;   // 自路受损时，拖对手总量必须≥2倍自损才值得
       const score = hurt - selfCost*3 + rnd()*0.5;
       if (score>bestScore){ bestScore=score; bestWall=[k,x,y]; }
     }
+  }
+  if (!bestWall && p.walls>0 && Math.min(...opps.map(q=>dists[q.color]))<=3){
+    // 紧急封堵：对手逼近王座，找一堵“拖住对手且不坑自己”的墙，评分选优
+    const spots=allWallSpots().sort(()=>rnd()-0.5);
+    let bestGuard=null, bestGuardScore=0;
+    for(const [k,x,y] of spots){
+      const sH=k==='h'?new Set(wallsH):wallsH, sV=k==='v'?new Set(wallsV):wallsV;
+      if(k==='h') sH.add(K(x,y)); else sV.add(K(x,y));
+      const d2=allDists(sH,sV);
+      const selfCost = d2[p.color] - myD;
+      if (selfCost > 1) continue;                    // 紧急时刻也最多容忍自损 1 步
+      let hurt=0;
+      for(const q of opps){
+        const g=d2[q.color]-dists[q.color];
+        if(g>0) hurt += g;
+      }
+      if (hurt <= selfCost) continue;                // 拖对手的量必须 strictly 大于自损
+      const s = hurt - selfCost*2;
+      if (s > bestGuardScore){ bestGuardScore=s; bestGuard=[k,x,y]; }
+    }
+    if (bestGuard) bestWall=bestGuard;
   }
   if (bestWall && rnd()>0.10){ doWall(p, bestWall[0], bestWall[1], bestWall[2]); return true; }
   const ms=legalMoves(p);
@@ -2254,14 +2320,14 @@ function draw(now){
     ctx.restore();
     ctx.save();
     ctx.font=Math.floor(CELL*0.34)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.globalAlpha=0.85;
     ctx.fillText('🌪️', px(c.x)+CELL/2, px(c.y)+CELL/2+2);
     ctx.restore();
   }
-  // 🐪 沙漠骆驼：随机游荡的坐骑（走到它格上即骑乘）
+  // 🐪 沙漠骆驼：随机游荡的坐骑（走到它格上即骑乘；暖色辉光保证深底上醒目）
   for(const c of camels){
     ctx.save();
-    ctx.font=Math.floor(CELL*0.5)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font=Math.floor(CELL*0.62)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.shadowColor='rgba(255,200,120,.95)'; ctx.shadowBlur=14;
     const bob = Math.sin(now/400 + c.x*1.7 + c.y*0.9)*CELL*0.05;
     ctx.fillText('🐪', px(c.x)+CELL/2, px(c.y)+CELL/2+2+bob);
     ctx.restore();
@@ -2279,7 +2345,7 @@ function draw(now){
     ctx.strokeStyle='rgba(220,242,255,.55)'; ctx.lineWidth=1.5;
     rr(X+2.5,Y+2.5,CELL-5,CELL-5, Math.max(4,CELL*0.12)); ctx.stroke();
     if (c.hp>1){                                       // 完整冰面：微微反光流动
-      ctx.globalAlpha=0.5+0.2*Math.sin(now/900+c.x+c.y);
+      ctx.globalAlpha=0.85+0.15*Math.sin(now/900+c.x+c.y);
       ctx.font=Math.floor(CELL*0.34)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
       ctx.fillText('❄️', X+CELL/2, Y+CELL/2+2);
     }else{                                             // 已裂一次：三道深色锯齿裂纹 + ⚠️ 警示（再被踩一次就碎）
@@ -2293,7 +2359,6 @@ function draw(now){
         ctx.lineTo(cx2+Math.cos(a+0.35)*r*1.35, cy2+Math.sin(a+0.35)*r*1.35);
       }
       ctx.stroke();
-      ctx.globalAlpha=0.9;
       ctx.font=Math.floor(CELL*0.3)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
       ctx.fillText('⚠️', X+CELL/2, Y+CELL*0.32);
     }
@@ -2313,7 +2378,6 @@ function draw(now){
     ctx.restore();
     ctx.save();
     ctx.font=Math.floor(CELL*0.34)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.globalAlpha=0.9;
     ctx.fillText('🌨️', px(c.x)+CELL/2, px(c.y)+CELL/2+2);
     ctx.restore();
   }
@@ -2331,7 +2395,7 @@ function draw(now){
     ctx.globalAlpha=0.30+0.18*Math.sin(now/200+c.x*1.3+c.y*0.9);   // 跳动热浪
     ctx.fillStyle='#ffd98a';
     rr(X+2.5,Y+2.5,CELL-5,CELL-5, Math.max(4,CELL*0.12)); ctx.fill();
-    ctx.globalAlpha=rem<=1?0.6:0.95;
+    ctx.globalAlpha=rem<=1?0.85:1;
     ctx.font=Math.floor(CELL*0.4)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText('🔥', X+CELL/2, Y+CELL/2+2);
     ctx.restore();
@@ -2348,19 +2412,19 @@ function draw(now){
     }
     ctx.font=Math.floor(CELL*0.34)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
     for(const bx of bcols) for(let y=0;y<N;y++){
-      ctx.globalAlpha=.30+.30*Math.sin(now/90+bx+y*1.7);
+      ctx.globalAlpha=.60+.35*Math.sin(now/90+bx+y*1.7);
       ctx.fillText('🔥', px(bx)+CELL/2, px(y)+CELL/2+2);
     }
     ctx.restore();
   }
-  // 🪱 沙漠虫 + 🐉 火龙：棋盘外围待命/盘旋（熔岩天城加大边距后可见）
+  // 🪱 沙漠虫 + 🐉 火龙：棋盘外围待命/盘旋（熔岩天城加大边距后可见；暖色辉光保证深底上醒目）
   if (levelId===3){
     ctx.save();
-    ctx.font=Math.floor(CELL*0.5)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font=Math.floor(CELL*0.6)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.shadowColor='rgba(255,190,110,.95)'; ctx.shadowBlur=18;
     for (const w of worms){
       const gx = w.side===0 ? w.pos+0.5 : w.side===2 ? w.pos+0.5 : (w.side===1 ? N+0.5 : -0.5);
       const gy = w.side===1 ? w.pos+0.5 : w.side===3 ? w.pos+0.5 : (w.side===0 ? -0.5 : N+0.5);
-      ctx.globalAlpha=.85;
       ctx.fillText('🪱', PAD+gx*CELL, PAD+gy*CELL + Math.sin(now/260+w.pos)*2);
     }
     if (dragon){
@@ -2426,8 +2490,8 @@ function draw(now){
     }
     const mx = f.kind==='h'? px(f.x+1) : px(f.x), my = f.kind==='h'? px(f.y) : px(f.y+1);
     ctx.save();
-    ctx.globalAlpha=0.75+0.25*Math.sin(now/150+f.x*1.7+f.y);
-    ctx.font=Math.floor(CELL*0.36)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.globalAlpha=0.85+0.15*Math.sin(now/150+f.x*1.7+f.y);
+    ctx.font=Math.floor(CELL*0.42)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText('🔥', mx, my);
     ctx.restore();
   }
@@ -2512,8 +2576,7 @@ function draw(now){
     rr(X+2,Y+2,CELL-4,CELL-4, Math.max(4,CELL*0.14)); ctx.fill();
     ctx.strokeStyle='rgba(138,107,255,'+(0.45+0.4*Math.sin(now/240)).toFixed(2)+')'; ctx.lineWidth=2;
     rr(X+2,Y+2,CELL-4,CELL-4, Math.max(4,CELL*0.14)); ctx.stroke();
-    ctx.globalAlpha=0.9;
-    ctx.font=Math.floor(CELL*0.4)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font=Math.floor(CELL*0.42)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText('🕳️', X+CELL/2, Y+CELL/2+2);
     ctx.restore();
   }
@@ -2522,7 +2585,7 @@ function draw(now){
     const bob = 2.5*Math.sin(now/300 + b.x*1.3 + b.y*0.9);
     ctx.save();
     ctx.shadowColor='rgba(253,202,0,.55)'; ctx.shadowBlur=10+4*Math.sin(now/200+b.x);
-    ctx.font=Math.floor(CELL*0.52)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font=Math.floor(CELL*0.62)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText('🎁', px(b.x)+CELL/2, px(b.y)+CELL/2+2+bob);
     ctx.restore();
   }
@@ -2531,7 +2594,7 @@ function draw(now){
     if (!canSeeTrap(t)) continue;
     const bob = 1.5*Math.sin(now/260 + t.x + t.y);
     ctx.save();
-    ctx.globalAlpha=0.75+0.25*Math.sin(now/300);
+    ctx.globalAlpha=0.85+0.15*Math.sin(now/300);
     ctx.font=Math.floor(CELL*0.42)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText('🪤', px(t.x)+CELL/2, px(t.y)+CELL/2+2+bob);
     ctx.restore();

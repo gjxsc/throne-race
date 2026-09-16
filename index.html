@@ -301,7 +301,7 @@ const INV_CAP = 2;   // 道具箱容量
 const LEVELS = [
   {id:'grass', icon:'🟩', name:'草原竞技场', diff:1, desc:'经典规则，纯抢座对决'},
   {id:'desert',icon:'🏜️', name:'沙漠遗迹',  diff:2, desc:'踩中暴风被卷到随机风暴旁，捉住骆驼骑 5 回合（每回合多走一步）',
-   sandstorm:6, camel:1},
+   sandstorm:6, camel:2},
   {id:'ice',   icon:'❄️', name:'冰雪峡谷',  diff:3, desc:'冰面被踩两次即碎裂坠回出生点，暴风雪四处游走，同格被弹飞',
    iceFrac:8, blizzard:6},
   {id:'lava',  icon:'🌋', name:'熔岩天城',  diff:4, desc:'沙漠虫定期砸落弹飞棋子，火山王座喷洒岩浆（踩中眩晕），火龙盘旋喷火',
@@ -326,7 +326,7 @@ let wallsH = new Set();   // "x,y"：横墙，挡住 (x,y-1)/(x,y) 与 (x+1,y-1)
 let wallsV = new Set();   // "x,y"：竖墙，挡住 (x-1,y)/(x,y) 与 (x-1,y+1)/(x,y+1) 的横向通行
 let wallOwner = {};       // "h x,y" / "v x,y" -> color
 let players = [];
-let turnIdx = 0, winner = null, busy = false, turnCount = 0, passStreak = 0;
+let turnIdx = 0, winner = null, busy = false, turnCount = 0, passStreak = 0, roundNum = 1;
 let mode = 'pve', wallStock = 8, muted = false, fastAI = false;
 let itemsOn = false, itemInterval = 5, itemClock = 0;   // 道具系统：定时发到玩家道具箱
 let disastersOn = true, disasterInterval = 3;     // 天灾系统：每 N 回合降下随机场地天灾
@@ -340,7 +340,7 @@ let sandstorms = [];                             // 🌪️ 沙漠暴风：{x,y}
 let camels = [];                                 // 🐪 沙漠骆驼：{x,y} 每回合随机走 1 步，同格玩家骑乘（5 回合内每回合 +1 行动）
 let iceCells = [], blizzards = [];                 // 🧊 冰雪：冰面 {x,y,hp}（全员累计踩 2 次即碎） / 暴风雪 {x,y} 每回合先于玩家移动
 let lavaCells = [];                              // 🌋 火山王座喷出的岩浆 {x,y,end}（存在 2 回合，踩中眩晕 1 回合）
-let worms = [], wormRounds = 0, volcanoNext = 0; // 🪱 沙漠虫 {side,pos} 外围待砸 / 已过回合数 / 火山下喷倒计时（turnCount）
+let worms = [], wormRounds = 0, volcanoNext = 0; // 🪱 沙漠虫 {side,pos} 外围待砸 / 已过回合数 / 火山下喷倒计时（roundNum）
 let dragon = null;                               // 🐉 火龙 {side,pos,flown}：外围顺时针飞行，飞满 dragonEvery 回合喷火
 let skillsOn = true, skillMax = 1;                // 技能系统开关 / 每人每局技能可用次数
 const SKILL_CD = 5;                               // ⏳ 技能冷却：释放后自己完成 5 次行动才可再用（skillCd 每次自己走子/放墙 -1，0=就绪）
@@ -543,10 +543,9 @@ function generateLevel(){
     for(let i=0;i<L.blizzard;i++){ const c=lvlTake(taken); if (c) blizzards.push({x:c.x, y:c.y}); }
   }
   if (levelId===3){                     // 🌋 熔岩天城：4 条沙漠虫分守四边外围 + 火龙起飞 + 火山王座首次下喷倒计时
-    const F = isSyncMode() ? 4 : 1;            // 同步模式 turnCount 按行动计，周期 ×4 对齐回合
     for(let i=0;i<4;i++) worms.push({side:i, pos:Math.floor(rnd()*N)});   // side：0上 1右 2下 3左
     dragon = {p: Math.floor(rnd()*4*N), flown:0};   // 外围顺时针序号（edgeAt 换算渲染坐标）
-    volcanoNext = (3+Math.floor(rnd()*3)) * F;  // 每 3-5 回合喷一次
+    volcanoNext = 3+Math.floor(rnd()*3);        // 首次喷发：3-5 回合后
   }
 }
 function newGame(){
@@ -570,7 +569,7 @@ function newGame(){
     };
   });
   turnIdx = Math.floor(rnd()*4);
-  winner = null; busy = false; turnCount = 0; passStreak = 0;
+  winner = null; busy = false; turnCount = 0; passStreak = 0; roundNum = 1;
   if (campaignOn && !isOnline()){ if (!roundStats || levelId===0) resetRoundStats(); }   // 🏆 一轮闯关统计：第 1 关开局=新一轮清零
   else roundStats = null;
   THRONE.x = THRONE.y = (N-1)/2;         // 王座复位正中（上一局可能被 👑 技能搬走）
@@ -917,14 +916,14 @@ function removeWall(kind,x,y){              // 天灾拆墙：清墙身 + 归属
 }
 function expireDisasters(){                 // 天灾到期结算（仅主机/单机）：火墙烧尽 / 塌陷格恢复
   if (!hostSim() || winner) return;
-  const fOut = fireWalls.filter(f=>f.end<=turnCount);
+  const fOut = fireWalls.filter(f=>f.end<=roundNum);
   if (fOut.length){
     for (const f of fOut) removeWall(f.kind, f.x, f.y);
     logPush('☀️ '+fOut.length+' 面火墙烧尽熄灭', null);
   }
-  const cOut = collapsed.filter(c=>c.end<=turnCount);
+  const cOut = collapsed.filter(c=>c.end<=roundNum);
   if (cOut.length){
-    collapsed = collapsed.filter(c=>c.end>turnCount);
+    collapsed = collapsed.filter(c=>c.end>roundNum);
     for (const c of cOut) fx.push({type:'sinkhole', x:c.x, y:c.y, up:true, t0:performance.now()});
     logPush('🕳️ '+cOut.length+' 个塌陷格恢复如初', null);
   }
@@ -971,8 +970,8 @@ function blizzardTick(){                     // 🌨️ 暴风雪：每回合先
 }
 function desertTick(){                       // 🏜️ 沙漠周期结算：暴风每 10 回合换位 + 骆驼每回合随机走 1 步（走到玩家格=被拾取）
   if (!hostSim() || winner || levelId!==1) return;
-  const every = isSyncMode() ? 40 : 10;      // 同步模式 turnCount 按行动计，×4 对齐回合
-  if (turnCount>0 && turnCount % every === 0){
+  const every = isSyncMode() ? 10 : 10;       // 同步/异步均按回合计（roundNum）
+  if (roundNum>1 && roundNum % every === 0){
     sandstorms = [];
     const want = lvlCount(LEVELS[1].sandstorm);
     for(let i=0;i<want*4 && sandstorms.length<want;i++){
@@ -1004,13 +1003,12 @@ function edgeAt(p){                         // 🌋 外围顺时针序 0..4N-1�
        : side===2 ? {side, x:N-1-i, y:N-1}
        :           {side, x:0,     y:N-1-i};
 }
-function sprayLava(n){                      // 🌋 向随机空格喷 n 格岩浆（火山王座/火龙共用），存续 2 回合（同步模式 turnCount 按行动计 ×4）
-  const F = isSyncMode() ? 4 : 1;
+function sprayLava(n){                      // 🌋 向随机空格喷 n 格岩浆（火山王座/火龙共用），存续 2 回合
   const put = [];
   for(let i=0; i<n*6 && put.length<n; i++){
     const c = randCell((x,y)=>!isLava(x,y) && !(x===THRONE.x && y===THRONE.y));
     if (!c) break;
-    lavaCells.push({x:c.x, y:c.y, end: turnCount + 2*F});
+    lavaCells.push({x:c.x, y:c.y, end: roundNum + 2});
     put.push({x:c.x, y:c.y});
   }
   return put;
@@ -1018,8 +1016,7 @@ function sprayLava(n){                      // 🌋 向随机空格喷 n 格岩�
 function wormTick(){                        // 🪱 沙漠虫：每 5 回合（同步 ×4）各自砸入棋盘 1/3 深度，砸中者弹至所在列顶部/底部；砸完换随机外围位
   if (!hostSim() || winner || levelId!==3 || !worms.length) return;
   wormRounds++;
-  const F = isSyncMode() ? 4 : 1;
-  if (wormRounds < 5*F) return;
+  if (wormRounds < 5) return;
   wormRounds = 0;
   const len = Math.floor(N/3);
   for (const w of worms){
@@ -1050,11 +1047,10 @@ function wormTick(){                        // 🪱 沙漠虫：每 5 回合（�
 }
 function volcanoTick(){                     // 🌋 火山王座：岩浆到期熄灭；每 3-5 回合（同步 ×4）喷 4-10 格岩浆，喷在玩家脚下直接眩晕 1 回合
   if (!hostSim() || winner || levelId!==3) return;
-  const F = isSyncMode() ? 4 : 1;
-  lavaCells = lavaCells.filter(c => c.end > turnCount);
-  if (volcanoNext && turnCount >= volcanoNext){
+  lavaCells = lavaCells.filter(c => c.end > roundNum);
+  if (volcanoNext && roundNum >= volcanoNext){
     const put = sprayLava(4 + Math.floor(rnd()*7));
-    volcanoNext = turnCount + (3 + Math.floor(rnd()*3)) * F;
+    volcanoNext = roundNum + 3 + Math.floor(rnd()*3);
     netEv({type:'lavaspray', cells: put});
     logPush('🌋 火山王座喷发！岩浆溅落 '+put.length+' 格（存续 2 回合，踩中眩晕）', null);
     for (const q of players){
@@ -1064,14 +1060,13 @@ function volcanoTick(){                     // 🌋 火山王座：岩浆到期�
     }
   }
 }
-function dragonTick(){                      // 🐉 火龙：外围顺时针每回合飞 1 步；飞满 dragonEvery 回合冲顶，中间 3 列放射喷火 1 回合，碰者回出生点；同场撒 10 宝箱 + 10 岩浆
+function dragonTick(){                      // 🐉 火龙：外围顺时针每回合飞 1 步；飞满 dragonEvery 回合冲顶，中间 3 列放射喷火，碰者回出生点；同场撒 10 宝箱 + 10 岩浆
   if (!hostSim() || winner || levelId!==3 || !dragon) return;
-  const F = isSyncMode() ? 4 : 1;
   dragon.p = (dragon.p+1) % (4*N);          // 顺时针飞 1 步（edgeAt 换算渲染坐标）
   dragon.flown++;
-  if (dragon.flown < LEVELS[3].dragonEvery * F) return;
+  if (dragon.flown < LEVELS[3].dragonEvery) return;
   dragon.flown = 0;
-  dragon.breathUntil = turnCount + F;       // 放射火焰持续 1 回合（渲染遮罩窗口）
+  dragon.breathUntil = roundNum + 2;        // 放射火焰持续 2 回合（渲染遮罩窗口）
   const cols = [Math.floor(N/2)-1, Math.floor(N/2), Math.floor(N/2)+1];   // 中间 3 列
   const hits = [];
   for (const q of players){
@@ -1081,6 +1076,14 @@ function dragonTick(){                      // 🐉 火龙：外围顺时针每�
     hits.push(q.color);
     logPush('🐉 '+COLORS[q.color].name+' 被龙焰吞没，退回出生点', q.color);
   }
+  let burnt=0;                                 // 🐉 龙焰焚墙：中间3列内所有墙面被烈焰烧毁
+  for(const cx of cols) for(let y=1;y<N;y++){
+    if(wallsH.has(K(cx,y))){ removeWall('h',cx,y); burnt++; }
+  }
+  for(const cx of [cols[0],cols[2]+1]) for(let y=0;y<N;y++){
+    if(wallsV.has(K(cx,y))){ removeWall('v',cx,y); burnt++; }
+  }
+  if(burnt) for(const p of players){ if(!p.left) p.walls+=burnt; }
   for(let i=0;i<10;i++) spawnBox(14);       // 火龙撒 10 个道具箱（临时放宽上限）
   sprayLava(10);                            // 火龙撒 10 格岩浆
   netEv({type:'dragonbreath', cols, hits});
@@ -1093,10 +1096,9 @@ function rollDisaster(){                     // 按权重随机决定天灾种�
   for (const k in DW){ r -= DW[k]; if (r<0){ kind=k; break; } }
   return kind;
 }
-function maybeDisaster(){                    // 天灾调度：经典每 N 手 / 同步每 N*4 次行动
+function maybeDisaster(){                    // 天灾调度：每 N 回合降下一次（roundNum 计）
   if (!disastersOn || winner || !hostSim()) return;
-  const every = isSyncMode() ? disasterInterval*4 : disasterInterval;
-  if (turnCount % every !== 0) return;
+  if (roundNum % disasterInterval !== 0) return;
   const kind = nextDisaster;                 // 降下预告的这场，并立即掷出下一场供顶部倒计时展示
   nextDisaster = rollDisaster();
   const D = disasterInfo(kind);
@@ -1160,7 +1162,7 @@ function disasterSink(){                     // 🕳️ 地陷：约 1/10 格子
   if (!cands.length) return {};
   const picked = shuffleArr(cands).slice(0, Math.min(cands.length, Math.floor(N*N/10)));
   for (const c of picked){
-    collapsed.push({x:c.x, y:c.y, end:turnCount+3});
+    collapsed.push({x:c.x, y:c.y, end:roundNum+3});
     fx.push({type:'sinkhole', x:c.x, y:c.y, t0:performance.now()});
   }
   sSmash();
@@ -1191,7 +1193,7 @@ function disasterSun(){                      // ☀️ 烈阳：随机点燃 10 
     if (!wallOK(kind,x,y)) continue;         // 候选基于落墙前快照，逐面复验避免互相冲突/断路
     (kind==='h'?wallsH:wallsV).add(K(x,y));
     wallOwner[kind+' '+K(x,y)] = null;       // 无主之火：不计入任何玩家的墙数
-    fireWalls.push({kind, x, y, end:turnCount+5});
+    fireWalls.push({kind, x, y, end:roundNum+5});
     fx.push({type:'sunfx', kind, x, y, t0:performance.now()});
     placed++;
   }
@@ -1299,6 +1301,7 @@ function nextTurn(){
   maybeDisaster();                         // 天灾：每 3 回合降下一次
   cur().extraActs=0;                       // 疾跑加行动只在当回合有效（防 pass 残留）
   turnIdx = (turnIdx+1)%players.length;
+  if (turnIdx===0) roundNum++;              // 全员轮完 → 新一轮（回合以所有玩家结束为准）
   let guard = players.length*2;            // 防多人同时被定身导致死循环
   while (guard-- > 0 && !winner){
     const f = cur();
@@ -1465,7 +1468,7 @@ function endGame(p){
   pn.innerHTML = `
     <h2 style="color:${COLORS[p.color].main}; text-shadow:0 0 24px ${COLORS[p.color].main}66">
       👑 ${(p.name||COLORS[p.color].name)} 获胜！</h2>
-    <div class="sub">4位玩家 · 1位赢家 · 0个朋友 —— 共 ${turnCount} 手</div>
+    <div class="sub">4位玩家 · 1位赢家 · 0个朋友 —— 共 ${roundNum} 回合</div>
     <div class="legend">
       ${players.map(q=>`<span style="color:${COLORS[q.color].main}"><i></i>${q.name||COLORS[q.color].name}${q===p?' 👑':''}</span>`).join('')}
     </div>
@@ -2406,9 +2409,8 @@ function draw(now){
   }
 
   // 🌋 岩浆：红橙滚烫（热浪脉动），最后一回合渐暗将熄（存续 2 回合，踩中眩晕 1 回合）
-  const lavaF = isSyncMode() ? 4 : 1;
   for(const c of lavaCells){
-    const rem = (c.end - turnCount)/lavaF;                 // 剩余存续回合数：2=新喷，1=将熄
+    const rem = c.end - roundNum;                          // 剩余存续回合数：2=新喷，1=将熄
     const X=px(c.x), Y=px(c.y);
     ctx.save();
     const lg = ctx.createLinearGradient(X,Y,X+CELL,Y+CELL);
@@ -2424,7 +2426,7 @@ function draw(now){
     ctx.restore();
   }
   // 🐉 火龙喷火窗口：中间 3 列自上而下烈焰遮罩 + 火苗闪烁（持续 1 回合）
-  if (dragon && dragon.breathUntil>turnCount){
+  if (dragon && dragon.breathUntil>roundNum){
     const bcols=[Math.floor(N/2)-1, Math.floor(N/2), Math.floor(N/2)+1];
     ctx.save();
     for(const bx of bcols){
@@ -2456,7 +2458,7 @@ function draw(now){
       const gy = d.side===0 ? -0.5 : d.side===2 ? N+0.5 : d.y+0.5;
       ctx.save();
       ctx.translate(PAD+gx*CELL, PAD+gy*CELL + Math.sin(now/300)*3);
-      ctx.rotate(dragon.breathUntil>turnCount ? 0 : (d.side===0?0:d.side===1?Math.PI/2:d.side===2?Math.PI:-Math.PI/2));
+      ctx.rotate(dragon.breathUntil>roundNum ? 0 : (d.side===0?0:d.side===1?Math.PI/2:d.side===2?Math.PI:-Math.PI/2));
       ctx.fillText('🐉', 0, 0);
       ctx.restore();
     }
@@ -3086,11 +3088,11 @@ function renderDisasterBar(){                // 棋盘顶部：下一场天灾�
   if (winner){ bar.style.display='none'; return; }
   bar.style.display='flex';
   if (!disastersOn){ bar.classList.remove('soon'); bar.innerHTML='<span>☄️ 天灾已关闭</span>'; return; }
-  const every = isSyncMode() ? disasterInterval*4 : disasterInterval;
-  const rem = every - (turnCount % every);
+  const every = disasterInterval;
+  const rem = every - (roundNum % every);
   const D = disasterInfo(nextDisaster);
   bar.classList.toggle('soon', rem<=1);
-  bar.innerHTML = '☄️ 下一场天灾：<b>'+D.icon+' '+D.name+'</b> · '+(rem<=1 ? '<b>即将降临！</b>' : '还有 <b>'+rem+'</b> '+(isSyncMode()?'次行动':'回合'));
+  bar.innerHTML = '☄️ 下一场天灾：<b>'+D.icon+' '+D.name+'</b> · '+(rem<=1 ? '<b>即将降临！</b>' : '还有 <b>'+rem+'</b> 回合');
 }
 function renderPanel(){
   renderDisasterBar();
@@ -3352,7 +3354,7 @@ function serializeState(){
     wr: wormRounds,
     vn: volcanoNext,
     drg: dragon ? {p:dragon.p, fl:dragon.flown, bu:dragon.breathUntil||0} : null,
-    turnIdx, turnCount, passStreak,
+    turnIdx, turnCount, passStreak, roundNum,
     winner: winner==null ? null : (winner==='draw' ? 'draw' : winner.color),
     draft: draft? {offers:draft.offers, picked:draft.picked} : null,
     players: players.map(p=>({
@@ -3400,7 +3402,7 @@ function applySnapshot(s, ev){
   nextDisaster = DISASTERS[s.nd] ? s.nd : nextDisaster;   // 跟随房主预告的下一场天灾
   skillsOn = s.skills!==false;
   skillMax = [1,3,5,10].includes(s.skillMax) ? s.skillMax : 1;
-  turnIdx = s.turnIdx; turnCount = s.turnCount; passStreak = s.passStreak;
+  turnIdx = s.turnIdx; turnCount = s.turnCount; passStreak = s.passStreak; roundNum = s.roundNum||1;
   itemClock = 0;
   draft = s.draft ? {offers:s.draft.offers, picked:s.draft.picked} : null;
   const hostNow = s.now || 0;
@@ -3474,7 +3476,7 @@ function showOnlineEnd(w){
     : (()=>{
         const p = players.find(q=>q.color===w), c = COLORS[w].main;
         return `<h2 style="color:${c}; text-shadow:0 0 24px ${c}66">👑 ${(p&&p.name)||COLORS[w].name} 获胜！</h2>
-          <div class="sub">4位玩家 · 1位赢家 · 0个朋友 —— 共 ${turnCount} 手</div>`;
+          <div class="sub">4位玩家 · 1位赢家 · 0个朋友 —— 共 ${roundNum} 回合</div>`;
       })();
   pn.innerHTML = `${head}
     <div class="legend">
@@ -3520,7 +3522,7 @@ function newOnlineGame(seats, settings){
     };
   });
   turnIdx = Math.floor(rnd()*4);
-  winner = null; busy = false; turnCount = 0; passStreak = 0;
+  winner = null; busy = false; turnCount = 0; passStreak = 0; roundNum = 1;
   itemClock = 0; boxes = []; traps = [];
   collapsed = []; fireWalls = [];            // 天灾残留清空
   generateLevel();                           // 关卡地形（房主生成，随快照同步给全员）

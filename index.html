@@ -1619,22 +1619,26 @@ function disasterMudflow(){                 // 🪨 泥石流：随机 1/5 列�
 function disasterFx(kind, extra){            // 天灾屏幕级特效（本地触发与远端 applyEvent 共用；皮肤雨丝色随创建时烙定）
   fx.push({type:'dfx', kind, t0:performance.now(), color:disasterInfo(kind).color, ...extra});
 }
-function tickAll(){                          // 同步模式：环境 tick + 每 4 次行动推进一回合（天灾/火山等按 roundNum 计的机制由此生效；顺序与 nextTurn 一致：tick 用旧回合数，推进在后）
-  expireDisasters(); blizzardTick(); desertTick(); wormTick(); volcanoTick(); dragonTick(); maybeDisaster();
-  if (turnCount % players.length === 0) roundNum++;
+function tickAll(){                          // 同步模式：每 players.length 次行动 = 1 回合：环境结算一次（tick 用旧回合数），再推进——动态机制全部按回合计
+  if (turnCount % players.length === 0){
+    expireDisasters(); blizzardTick(); desertTick(); wormTick(); volcanoTick(); dragonTick(); maybeDisaster();
+    roundNum++;
+  }
 }
 function nextTurn(){
   if (winner) return;
-  expireDisasters();                       // 天灾到期结算：地陷恢复 / 火墙熄灭
-  blizzardTick();                          // 🌨️ 冰雪峡谷：暴风雪先于玩家移动（同格玩家被弹飞）
-  desertTick();                            // 🏜️ 沙漠遗迹：暴风换位 / 骆驼走动
-  wormTick();                              // 🪱 沙漠虫：砸入弹飞（在玩家行动结算后、轮转前）
-  volcanoTick();                           // 🌋 火山王座：岩浆到期熄灭 / 周期喷发
-  dragonTick();                            // 🐉 火龙：外围飞行 / 冲顶喷火
-  maybeDisaster();                         // 天灾：每 3 回合降下一次
   cur().extraActs=0;                       // 疾跑加行动只在当回合有效（防 pass 残留）
   turnIdx = (turnIdx+1)%players.length;
-  if (turnIdx===0) roundNum++;              // 全员轮完 → 新一轮（回合以所有玩家结束为准）
+  if (turnIdx===0){                        // 全员轮完 = 1 回合结束：环境结算一次（tick 用旧回合数），再推进——动态机制全部按回合而非按角色行动计
+    expireDisasters();                     // 天灾到期结算：地陷恢复 / 火墙熄灭
+    blizzardTick();                        // 🌨️ 冰雪峡谷：暴风雪先于玩家移动（同格玩家被弹飞）
+    desertTick();                          // 🏜️ 沙漠遗迹：暴风换位 / 骆驼走动
+    wormTick();                            // 🪱 沙漠虫：砸入弹飞（每 5 回合一砸，按轮计）
+    volcanoTick();                         // 🌋 火山王座：岩浆到期熄灭 / 周期喷发
+    dragonTick();                          // 🐉 火龙：外围飞行 / 冲顶喷火（每轮回合一飞）
+    maybeDisaster();                       // ☄️ 天灾：每 3 回合降下一次（每轮至多一次）
+    roundNum++;                            // 全员轮完 → 新一轮（回合以所有玩家结束为准）
+  }
   const npx = players[turnIdx];             // 🌑 日蚀：被遮蔽者回合开始时递减
   if (npx && npx.blindRounds>0) npx.blindRounds--;
   let guard = players.length*2;            // 防多人同时被定身导致死循环
@@ -3108,7 +3112,7 @@ function draw(now){
     }
     ctx.restore();
   }
-  // 🪱 沙漠虫 + 🐉 火龙：棋盘外围待命/盘旋（熔岩天城加大边距后可见；暖色辉光保证深底上醒目）
+  // 🪱 沙漠虫 + 🐉 火龙：棋盘外围待命/盘旋（熔岩天城加大边距后可见；实心底衬 + 暖色辉光保证深底上醒目）
   if (levelId===3){
     ctx.save();
     ctx.font=Math.floor(CELL*0.6)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
@@ -3116,7 +3120,17 @@ function draw(now){
     for (const w of worms){
       const gx = w.side===0 ? w.pos+0.5 : w.side===2 ? w.pos+0.5 : (w.side===1 ? N+0.5 : -0.5);
       const gy = w.side===1 ? w.pos+0.5 : w.side===3 ? w.pos+0.5 : (w.side===0 ? -0.5 : N+0.5);
-      ctx.fillText('🪱', PAD+gx*CELL, PAD+gy*CELL + Math.sin(now/260+w.pos)*2);
+      const WX=PAD+gx*CELL, WY=PAD+gy*CELL + Math.sin(now/260+w.pos)*2;
+      ctx.save();                                   // 实心底衬（同骆驼/宝箱风格）
+      const wg=ctx.createLinearGradient(WX-CELL/2,WY-CELL/2,WX+CELL/2,WY+CELL/2);
+      wg.addColorStop(0,'#c9a06a'); wg.addColorStop(1,'#7a5426');
+      ctx.fillStyle=wg;
+      rr(WX-CELL*0.42,WY-CELL*0.42,CELL*0.84,CELL*0.84, Math.max(4,CELL*0.18)); ctx.fill();
+      ctx.strokeStyle='rgba(255,226,170,.9)'; ctx.lineWidth=2;
+      rr(WX-CELL*0.42,WY-CELL*0.42,CELL*0.84,CELL*0.84, Math.max(4,CELL*0.18)); ctx.stroke();
+      ctx.shadowColor='rgba(255,190,110,.95)'; ctx.shadowBlur=14;
+      ctx.fillText('🪱', WX, WY);
+      ctx.restore();
     }
     if (dragon){
       const d = edgeAt(dragon.p);
@@ -3124,7 +3138,14 @@ function draw(now){
       const gy = d.side===0 ? -0.5 : d.side===2 ? N+0.5 : d.y+0.5;
       ctx.save();
       ctx.translate(PAD+gx*CELL, PAD+gy*CELL + Math.sin(now/300)*3);
+      const dg=ctx.createLinearGradient(-CELL/2,-CELL/2,CELL/2,CELL/2);   // 实心底衬（同骆驼/宝箱风格）
+      dg.addColorStop(0,'#b8542e'); dg.addColorStop(1,'#5c2210');
+      ctx.fillStyle=dg;
+      rr(-CELL*0.44,-CELL*0.44,CELL*0.88,CELL*0.88, Math.max(4,CELL*0.2)); ctx.fill();
+      ctx.strokeStyle='rgba(255,160,90,.9)'; ctx.lineWidth=2;
+      rr(-CELL*0.44,-CELL*0.44,CELL*0.88,CELL*0.88, Math.max(4,CELL*0.2)); ctx.stroke();
       ctx.rotate(dragon.breathUntil>roundNum ? 0 : (d.side===0?0:d.side===1?Math.PI/2:d.side===2?Math.PI:-Math.PI/2));
+      ctx.shadowColor='rgba(255,190,110,.95)'; ctx.shadowBlur=16;
       ctx.fillText('🐉', 0, 0);
       ctx.restore();
     }

@@ -1,0 +1,4 @@
+docs/
+.verify_*.png
+.DS_Store
+__pycache__/

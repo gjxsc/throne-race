@@ -285,15 +285,12 @@ _bfsRebuild();
 const kk = (x,y)=>_keys[(y+1)*(N+2)+x+1];          // K(x,y) 的查表版：热路径零字符串拼接
 /* ---- 技能池（开局每人随机抽 3 选 1，整局限用 skillMax 次） ---- */
 const SKILLS = [
-  {id:'breakwall', icon:'💥', name:'墙面爆破', target:'wall', desc:'击碎棋盘上任意一堵墙'},
   {id:'phase',     icon:'👻', name:'穿墙',     target:'wall', desc:'穿过身边一堵墙，落到墙另一侧的空格'},
   {id:'steal',     icon:'🪓', name:'盗取道具', target:'pawn', desc:'夺取一名对手道具箱里的 1 个道具'},
-  {id:'swap',      icon:'🔄', name:'换位',     target:'pawn', desc:'与指定角色互换位置'},
   {id:'swapcolor', icon:'🎨', name:'换色',     target:'pawn', desc:'与指定角色互换颜色（棋子与墙）'},
   {id:'freeze',    icon:'❄️', name:'定身术',   target:'pawn', desc:'指定角色 1 回合不可操作（同步模式冻结 3 秒）'},
   {id:'jump',      icon:'🎲', name:'随机跳跃', target:null,   desc:'随机传送到任意空格（不会落到王座附近）'},
-  {id:'thronemove',icon:'👑', name:'王座随机换位', target:null, desc:'王座随机迁移到棋盘上另一处'},
-  {id:'shuffle',   icon:'🌀', name:'指定角色随机换位', target:'pawn', desc:'把指定角色随机传送到任意空格'},
+  {id:'shuffle',   icon:'🌀', name:'指定角色随机换位', target:'pawn', desc:'把指定角色随机传送到任意空格（不会送到王座附近）'},
   {id:'sprint',    icon:'🏃', name:'疾跑',     target:null,   desc:'本回合可行动 2 次（同步模式 +2 操作点）'},
 ];
 const INV_CAP = 2;   // 道具箱容量
@@ -332,6 +329,9 @@ const ITEMS = {
   fakebox:  {icon:'🎁', name:'假宝箱',     desc:'在脚下布一个假宝箱：敌人踩中眩晕 2 一无所得（金色略暗，仅你识破）'},
   dice:     {icon:'🎲', name:'命运骰子',   desc:'掷骰 1~6：自眩 1 / +2 堵墙 / 随机敌眩 2 / 白得道具，听天由命'},
   boomerang:{icon:'🪃', name:'回旋镖',     desc:'点击选方向掷出：飞 4 格折返，去回各打一人，捎回路过的宝箱'},
+  swapcard: {icon:'🔄', name:'换位卡',     desc:'点击一名对手：与其互换位置'},
+  thronemove:{icon:'👑', name:'王座地震',   desc:'传说道具：王座随机迁移到棋盘另一处（人人可达）', legendary:true},
+  skilladd: {icon:'🎟️', name:'技能次数卡', desc:'开箱即触发：技能可用次数 +1（本局无技能则 +1 堵墙）'},
 };
 
 /* ================= 状态 ================= */
@@ -573,6 +573,7 @@ function newGame(){
       ai:(mode==='spectate') || (mode!=='hotseat' && !human),
       human,
       tween:null, ap:SYNC_APMAX, lastAct:0, nextThink:0, bank:false, burstLeft:0,
+      lastStep:null, waitStreak:0,                 // 🤖 AI 回头滞回：上一步来源格 / 无收益连续等待计数
       inv:[],                                     // 道具箱：'wall' 🧱 / 'hammer' 🔨
       skill:null, skillUsed:0, skillOffer:[],     // 本局技能 / 已用次数 / 开局 3 选 1 候选
       skillCd:0,                                  // ⏳ 技能冷却：自己还需行动的次数（0=就绪；每次自己走子/放墙 -1）
@@ -602,7 +603,7 @@ function newGame(){
   else if (!isSyncMode()){ autoPassIfNeeded(); scheduleAI(); }
 }
 
-/* ---- 开局选技（每人从 10 个技能随机抽 3 选 1；AI 自动；全选完才开局） ---- */
+/* ---- 开局选技（每人从 7 个技能随机抽 3 选 1；AI 自动；全选完才开局） ---- */
 function startDraft(){
   draft = {offers:{}, picked:{}, queue:[]};
   for(const p of players){
@@ -730,7 +731,8 @@ function doMove(p, cell){
     }                                     // 镜像格不可走：仍按原方向走（混乱落空），避免卡死
   }
   const jump = Math.abs(p.cell.x-cell.x)+Math.abs(p.cell.y-cell.y) > 1;
-  p.tween = {fx:p.cell.x, fy:p.cell.y, t0:performance.now()};
+  p.tween = {fx:p.cell.x, fy:p.cell.y, t0:performance.now(), jump, dur: jump?200:undefined};   // 🏓 跳子：腾空弧线 + 稍长动画
+  p.lastStep = {x:p.cell.x, y:p.cell.y};       // 🤖 AI 回头滞回：记住来源格
   p.cell = {x:cell.x, y:cell.y};
   passStreak = 0; turnCount++;
   if (p.skillCd>0) p.skillCd--;                 // ⏳ 技能冷却：自己每完成一次行动 -1（走子）
@@ -789,6 +791,7 @@ function throneMovable(x,y){                   // 王座迁到 (x,y) 是否人�
 function teleport(pawn, cell, dur){            // 传送并带动滑动动画（默认 90ms；dur 指定长程缓滑，如泥石流卷落随滚石同速）
   pawn.tween = {fx:pawn.cell.x, fy:pawn.cell.y, t0:performance.now(), dur: dur||90};
   pawn.cell = {x:cell.x, y:cell.y};
+  pawn.lastStep = null;                        // 🤖 传送后无「回头」概念，滞回清零
 }
 function shieldBlockSkill(p, v, sk){       // 🛡️ 护盾挡下指向性技能：技能照常消耗、效果免疫（特效全员可见）
   v.shield = false;
@@ -810,11 +813,6 @@ function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=�
   if (!sk || p.skill!==id || (p.skillUsed||0)>=skillMax || (p.skillCd||0)>0) return false;
   let done = false;
   switch(id){
-    case 'breakwall': {                        // 💥 击碎任意一堵墙（复用锤子逻辑）
-      const set = t.kind==='h'?wallsH:wallsV;
-      if (!set.has(K(t.x,t.y))) return false;
-      execSmashWall(p, t.kind, t.x, t.y);
-      done = true; break; }
     case 'phase': {                            // 👻 穿过身边一堵墙，落到另一侧空格
       const nx=p.cell.x+t.dx, ny=p.cell.y+t.dy;
       if (!inB(nx,ny) || isCollapsed(nx,ny) || pawnAt(nx,ny) || !blocked(p.cell.x,p.cell.y,nx,ny)) return false;
@@ -833,13 +831,6 @@ function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=�
       toast(COLORS[p.color].name+' 🪓 夺走了 '+COLORS[v.color].name+' 的道具');
       stHit(p, 'sabotage');                   // 🗡️ 一轮闯关统计：坑害对手
       done = true; break; }
-    case 'swap': {                             // 🔄 与目标互换位置
-      const v=players.find(q=>q.color===t.color);
-      if (!v || v===p) return false;
-      if (v.shield) return shieldBlockSkill(p, v, sk);
-      const a={...p.cell}, b={...v.cell};
-      teleport(p, b); teleport(v, a);
-      sJump(); netEv({type:'skill', fx:'jump'}); stHit(p, 'sabotage'); done = true; break; }
     case 'swapcolor': {                        // 🎨 与目标互换显示色（棋子与墙）
       const v=players.find(q=>q.color===t.color);
       if (!v || v===p) return false;
@@ -859,17 +850,11 @@ function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=�
       const c = randCell((x,y)=>cheb(x,y,THRONE)>=4);
       if (!c) return false;
       teleport(p, c); sJump(); netEv({type:'skill', fx:'jump'}); done = true; break; }
-    case 'thronemove': {                       // 👑 王座随机迁移（离所有棋子 ≥2 格且人人可达）
-      const c = randCell((x,y)=>players.every(q=>q.left||cheb(x,y,q.cell)>=2) && throneMovable(x,y));
-      if (!c) return false;
-      THRONE.x=c.x; THRONE.y=c.y;
-      fx.push({type:'throne', x:c.x, y:c.y, t0:performance.now()});
-      sWall(); netEv({type:'skill', fx:'jump'}); done = true; break; }
-    case 'shuffle': {                          // 🌀 把目标随机传送到任意空格
+    case 'shuffle': {                          // 🌀 把目标随机传送到任意空格（落点距王座 ≥3，防"坑人变送人"）
       const v=players.find(q=>q.color===t.color);
       if (!v || v===p) return false;
       if (v.shield) return shieldBlockSkill(p, v, sk);
-      const c = randCell();
+      const c = randCell((x,y)=>cheb(x,y,THRONE)>=3);
       if (!c) return false;
       teleport(v, c); sJump(); netEv({type:'skill', fx:'jump'}); stHit(p, 'sabotage'); done = true; break; }
     case 'sprint': {                           // 🏃 疾跑：经典=本回合多 1 次行动 / 同步=+2 操作点
@@ -960,6 +945,7 @@ function giveCamel(p, cm){                   // 🐪 骑上骆驼：5 回合内�
   const i = camels.indexOf(cm);
   if (i>=0) camels.splice(i,1);
   p.camel = 5;
+  fx.push({type:'stun', icon:'🐪', x:p.cell.x, y:p.cell.y, t0:performance.now()});   // 骑乘瞬间：🐪 徽标上浮
   netEv({type:'camel', color:p.color, on:1, x:p.cell.x, y:p.cell.y});
   logPush('🐪 '+COLORS[p.color].name+' 骑上了骆驼！5 回合内每回合多走一步', p.color);
 }
@@ -972,6 +958,7 @@ function dropCamel(p){                       // 🐪 骑乘用尽：骆驼跑向
     if (d>bd){ bd=d; best=c; }
   }
   if (best) camels.push(best);
+  fx.push({type:'stun', icon:'🐪', x:p.cell.x, y:p.cell.y, t0:performance.now()});   // 骆驼跑远：🐪 徽标上浮
   netEv({type:'camel', color:p.color, on:0});
   logPush('🐪 骆驼跑向远方，等待下一位骑手', null);
 }
@@ -1080,6 +1067,7 @@ function volcanoTick(){                     // 🌋 火山王座：岩浆到期�
     const put = sprayLava(4 + Math.floor(rnd()*7));
     volcanoNext = roundNum + 3 + Math.floor(rnd()*3);
     netEv({type:'lavaspray', cells: put});
+    fx.push({type:'lavaspray', cells: put, t0:performance.now()});   // 本地/host 端同步出特效（netEv 只广播给远端）
     logPush('🌋 火山王座喷发！岩浆溅落 '+put.length+' 格（存续 2 回合，踩中眩晕）', null);
     for (const q of players){
       if (q.left || !put.some(c=>c.x===q.cell.x && c.y===q.cell.y)) continue;
@@ -1114,6 +1102,7 @@ function dragonTick(){                      // 🐉 火龙：外围顺时针每�
   for(let i=0;i<5;i++) spawnBox();          // 火龙撒 5 个道具箱（受全场 5 上限 FIFO 约束）
   sprayLava(10);                            // 火龙撒 10 格岩浆
   netEv({type:'dragonbreath', cols, hits});
+  fx.push({type:'dragonbreath', cols, t0:performance.now()});        // 本地/host 端同步出特效（netEv 只广播给远端）
   sBad();
   logPush('🐉 火龙冲顶喷火！中间 3 列烈焰扫过'+(hits.length?'，'+hits.map(c=>COLORS[c].name).join('、')+' 被扫回出生点':'')+'，撒下宝箱与岩浆', null);
 }
@@ -1439,7 +1428,7 @@ function useBoomerangItem(p, dx, dy){       // 🪃 回旋镖：飞 4 格折返�
   for (let k=1;k<path.length;k++){
     const [bx,by]=path[k];
     const bi = boxes.findIndex(b=>b.x===bx && b.y===by);
-    if (bi>=0 && p.inv.length < INV_CAP){
+    if (bi>=0 && boxes[bi].i!=='stun' && boxes[bi].i!=='skilladd' && p.inv.length < INV_CAP){   // 💫眩晕/🎟️次数卡箱不捎（留给真踩触发）
       const b=boxes[bi]; boxes.splice(bi,1);
       p.inv.push(b.i); took++;
       fx.push({type:'openbox', x:bx, y:by, i:b.i, t0:performance.now()});
@@ -1465,13 +1454,53 @@ function useDiceItem(p){                    // 🎲 命运骰子：1 自眩 / 2-
     if (foes.length){ const t=foes[Math.floor(rnd()*foes.length)]; applyStun(t,2); stHit(t,'disaster'); msg=COLORS[t.color].name+' 眩晕 2 回合 ⚡'; }
     else msg='没有对手可打';
   }else{
-    if (p.inv.length < INV_CAP){ const k=rollItemKind(); p.inv.push(k); msg='白得 '+ITEMS[k].icon+' '+ITEMS[k].name+' 🎉'; }
+    if (p.inv.length < INV_CAP){ let k=rollItemKind(); while(k==='stun'||k==='skilladd') k=rollItemKind(); p.inv.push(k); msg='白得 '+ITEMS[k].icon+' '+ITEMS[k].name+' 🎉'; }
     else msg='道具箱已满，作废 😢';
   }
   fx.push({type:'stun', x:p.cell.x, y:p.cell.y, t0:performance.now(), icon:'🎲'});
   logPush('🎲 命运骰子掷出 '+roll+' 点：'+msg, p.color);
   sPick(); renderPanel();
   return true;
+}
+function useSwapCardItem(p, v){                // 🔄 换位卡：与一名对手互换位置
+  const i = p.inv.indexOf('swapcard');
+  if (i<0 || !v || v===p || v.left) return false;
+  if (v.shield){
+    p.inv.splice(i,1);                          // 护盾挡下：道具照常消耗、效果免疫（与技能版语义一致）
+    shieldBlockSkill(p, v, {icon:'🔄', name:'换位卡'});
+    return true;
+  }
+  p.inv.splice(i,1); stHit(p, 'items'); stHit(p, 'sabotage');
+  const a={...p.cell}, b={...v.cell};
+  teleport(p, b); teleport(v, a);
+  fx.push({type:'stun', icon:'🔄', x:b.x, y:b.y, t0:performance.now()});
+  logPush('🔄 与 '+COLORS[v.color].name+' 互换位置！', p.color);
+  sJump(); renderPanel();
+  return true;
+}
+function useThroneQuakeItem(p){                // 👑 王座地震：王座随机迁移（离所有棋子 ≥2 格且人人可达）
+  const i = p.inv.indexOf('thronemove');
+  if (i<0) return false;
+  const c = randCell((x,y)=>players.every(q=>q.left||cheb(x,y,q.cell)>=2) && throneMovable(x,y));
+  if (!c) return false;
+  p.inv.splice(i,1); stHit(p, 'items');
+  THRONE.x=c.x; THRONE.y=c.y;
+  fx.push({type:'throne', x:c.x, y:c.y, t0:performance.now()});
+  logPush('👑 王座地震！王座迁移到('+c.x+','+c.y+')', p.color);
+  sWall(); renderPanel();
+  return true;
+}
+function triggerSkillAdd(p){                   // 🎟️ 技能次数卡：开箱即触发——技能可用次数 +1（无技能局 +1 堵墙）
+  if (skillsOn && p.skill){
+    p.skillUsed = Math.max(0, (p.skillUsed||0)-1);
+    fx.push({type:'stun', icon:'🎟️', x:p.cell.x, y:p.cell.y, t0:performance.now()});
+    logPush('🎟️ 技能次数卡：技能可用次数 +1！', p.color);
+  }else{
+    p.walls++;
+    fx.push({type:'stun', icon:'🎟️', x:p.cell.x, y:p.cell.y, t0:performance.now()});
+    logPush('🎟️ 本局无技能，技能次数卡转化为 +1 堵墙 🧱', p.color);
+  }
+  sPick(); renderPanel();
 }
 function useBlueShellItem(p){               // 🌀 蓝龟壳：自动锁定领跑者，眩晕 5 + 碎 1 道具
   const i = p.inv.indexOf('blueshell');
@@ -1920,8 +1949,8 @@ function aiTurn(){
   aiUseItems(p);                                // 道具：免费即时，择机自动用
   if (winner) return;
   if (myD <= 1){
-    const ms = legalMoves(p);
-    if (ms.length){ aiAct(p, 'move', bestToward(p, ms)); return; }
+    const ms = legalMoves(p).filter(c=>c.x===THRONE.x&&c.y===THRONE.y);   // 快赢：直达王座（不经过场评估，防被拾箱目标带偏）
+    if (ms.length){ aiAct(p, 'move', ms[0]); return; }
   }
   // 评估放墙
   const lead = opps.slice().sort((a,b)=>dists[a.color]-dists[b.color])[0];   // 🎯 领先者：重点打击对象
@@ -1971,17 +2000,29 @@ function aiTurn(){
   }
   if (bestWall && rnd()>0.06){ aiAct(p,'wall',bestWall); return; }
   const ms=legalMoves(p);
-  if (ms.length) aiAct(p,'move',bestToward(p,ms));
-  else if (bestWall) aiAct(p,'wall',bestWall);
-  else {                                          // 兜底：无路可走又无可心之墙（如被泥石流卷到底后被围死）→ 随手放一堵合法墙或跳过，回合链永不断裂
-    const spots = p.walls>0 ? allWallSpots() : [];
-    if (spots.length) aiAct(p,'wall', spots[Math.floor(rnd()*spots.length)]);
-    else {
-      logPush('无路可走，跳过回合', p.color); netEv({type:'pass', color:p.color});
-      passStreak++;
-      if (passStreak >= players.length*2){ endDraw(); return; }
-      nextTurn();
-    }
+  let step = ms.length ? bestToward(p, ms) : null;
+  if (!step && ms.length && (p.waitStreak||0) >= 2) step = bestToward(p, ms, true);   // 🤖 僵局破除：连续等待 2 次后强走最优
+  if (step){ p.waitStreak=0; aiAct(p,'move',step); }
+  else if (bestWall){ p.waitStreak=0; aiAct(p,'wall',bestWall); }
+  else if (!ms.length && p.walls>0){          // 无路可走：随手放一堵合法墙防卡死
+    p.waitStreak=0;
+    const spots = allWallSpots();
+    if (spots.length){ aiAct(p, 'wall', spots[Math.floor(rnd()*spots.length)]); return; }
+    logPush('无路可走，跳过回合', p.color); netEv({type:'pass', color:p.color});
+    passStreak++;
+    if (passStreak >= players.length*2){ endDraw(); return; }
+    nextTurn();
+  }
+  else if (ms.length){                        // 🤖 有路但无收益：原地观察一回合（waitStreak≥2 自动强走破僵局；主动等待不计平局计数）
+    p.waitStreak=(p.waitStreak||0)+1;
+    logPush('观察局势，暂不动身', p.color); netEv({type:'pass', color:p.color});
+    nextTurn();
+  }
+  else {                                      // 无路且无墙位：真死局跳过
+    logPush('无路可走，跳过回合', p.color); netEv({type:'pass', color:p.color});
+    passStreak++;
+    if (passStreak >= players.length*2){ endDraw(); return; }
+    nextTurn();
   }
 }
 function aiField(p, tx, ty){            // 🤖 AI 个体感知场：地形危险加权、资源打折的 Dijkstra 距离（默认从王座反向扩散；传 tx,ty 则以该格为目标——拾箱子目标）
@@ -2089,12 +2130,26 @@ function aiBoxTarget(p, myD, dists){  // 🤖 需求驱动拾箱：按欲望绕�
   }
   return best;
 }
-function bestToward(p, ms){
-  const dists = allDists();
+function bestToward(p, ms, force){           // 🤖 加权感知场选路：避暴风/碎冰/暴风雪/岩浆，追骆驼/宝箱/目标箱
+  const dists = allDists();                   // 回头滞回：排除上一步来源格（唯一候选或场值差≥2 明显更优才豁免）——防 A↔B 二循环震荡
   const box = aiBoxTarget(p, dists[p.color], dists);   // 🤖 需求驱动拾箱：预算内选定目标箱，寻路临时奔箱
-  const dist = box ? aiField(p, box.x, box.y) : aiField(p);   // 加权感知场选路：避暴风/碎冰/暴风雪/岩浆，追骆驼/宝箱/目标箱
-  let best=ms[0], bd=Infinity;
-  for(const c of ms){ const d=dist[c.y*N+c.x]; if(d<bd){bd=d;best=c;} }
+  const dist = box ? aiField(p, box.x, box.y) : aiField(p);
+  const back = c => p.lastStep && c.x===p.lastStep.x && c.y===p.lastStep.y;
+  let bAll=null, dAll=Infinity, bNb=null, dNb=Infinity;
+  for(const c of ms){
+    const d=dist[c.y*N+c.x];
+    if(d<dAll){ dAll=d; bAll=c; }
+    if(!back(c) && d<dNb){ dNb=d; bNb=c; }
+  }
+  let best;
+  if (!bNb) best = bAll;                                   // 候选全是回头格：唯一选择豁免
+  else if (bAll && back(bAll) && dAll <= dNb-2) best = bAll;   // 回头格明显更优才豁免
+  else best = bNb;
+  if (!best) return null;
+  if (!force){                                             // 🤖 无收益判定：最优候选场值不降 = 已在局部最优 → null（上层等待/放墙；force=僵局破除强走）
+    const cur = dist[p.cell.y*N+p.cell.x];
+    if (dist[best.y*N+best.x] >= cur-0.01) return null;
+  }
   return best;
 }
 function aiUseItems(p){                      // 免费道具：AI 择机自动用——策略层（拦截/防御/最优目标）+ 保底释放层（35% 随性开溜保证娱乐性）
@@ -2123,6 +2178,10 @@ function aiUseItems(p){                      // 免费道具：AI 择机自动�
     if ((nearFoe || iAmLeader) && useShieldItem(p)) return true;
   }
   if (p.inv.indexOf('doom')>=0 && useDoomItem(p, threat)) return true;   // 3️⃣ 定点标记：标全场最近敌人（领先时反标追击者）
+  if (p.inv.indexOf('swapcard')>=0 && threat && dists[threat.color] < myD-1 && useSwapCardItem(p, threat)) return true;   // 🔄 换位卡：与更近王座的敌人换位才赚
+  if (p.inv.indexOf('thronemove')>=0 && myD>=6){  // 👑 王座地震：落后较远时重掷王座（期望抹平位置差）
+    useThroneQuakeItem(p); return true;
+  }
   if (p.inv.indexOf('megaphone')>=0){    // 4️⃣ 📢 范围内敌≥1 或墙≥2 → 震（踢飞+碎墙总有戏剧效果）
     const cx=p.cell.x, cy=p.cell.y, md=(x,y)=>Math.abs(x-cx)+Math.abs(y-cy);
     let wn=0, en=0;
@@ -2214,6 +2273,8 @@ function aiUseItems(p){                      // 免费道具：AI 择机自动�
                : k==='doom'?useDoomItem(p, threat)
                : k==='skate'?useSkateItem(p)
                : k==='confusion'?useConfusionItem(p, threat)
+               : k==='swapcard'?useSwapCardItem(p, threat)
+               : k==='thronemove'?useThroneQuakeItem(p)
                : (k==='shell'||k==='boomerang'||k==='bomb') ? (()=>{   // 方向类：任选合法方向发射
                    for (const [ddx,ddy] of [[1,0],[-1,0],[0,1],[0,-1]]){
                      const f = k==='shell'?useShellItem(p,ddx,ddy) : k==='bomb'?useBombItem(p,ddx,ddy) : useBoomerangItem(p,ddx,ddy);
@@ -2270,8 +2331,8 @@ function syncAIDecide(p){
   const myD = dists[p.color];
   const opps = players.filter(q=>q!==p && !q.left);
   if (myD <= 1){
-    const ms = legalMoves(p);
-    if (ms.length){ doMove(p, bestToward(p, ms)); return true; }
+    const ms = legalMoves(p).filter(c=>c.x===THRONE.x&&c.y===THRONE.y);   // 快赢：直达王座（不经过场评估，防被拾箱目标带偏）
+    if (ms.length){ doMove(p, ms[0]); return true; }
   }
   const hammerIdx = p.inv.indexOf('hammer');
   if (hammerIdx>=0){                            // 有锤子：免费砸对自己收益最大的墙
@@ -2328,15 +2389,16 @@ function syncAIDecide(p){
   }
   if (bestWall && rnd()>0.10){ doWall(p, bestWall[0], bestWall[1], bestWall[2]); return true; }
   const ms=legalMoves(p);
-  if (ms.length){ doMove(p, bestToward(p,ms)); return true; }
+  const step = ms.length ? bestToward(p, ms) : null;
+  if (step){ doMove(p, step); return true; }   // 🤖 无收益返回 null：本轮不消耗行动点，下个思考节拍再评（他人行动会改变局面）
   if (bestWall){ doWall(p, bestWall[0], bestWall[1], bestWall[2]); return true; }
   return false;
 }
 
 function boxAt(x,y){ return boxes.find(b=>b.x===x&&b.y===y) || null; }
 function trapAt(x,y){ return traps.find(t=>t.x===x&&t.y===y) || null; }
-const LEGENDARY_KINDS = ['bang','doom','megaphone','skate','blueshell','bomb','hourglass','eclipse'];   // 💎 传说池：8 道具等权
-const ATTACK_KINDS = ['trap','confusion','hammer','shell','fakebox'];    // 🔗 橡皮筋：领跑者开到攻击类 → 50% 重掷
+const LEGENDARY_KINDS = ['bang','doom','megaphone','skate','blueshell','bomb','hourglass','eclipse','thronemove'];   // 💎 传说池：9 道具等权
+const ATTACK_KINDS = ['trap','confusion','hammer','shell','fakebox','swapcard'];    // 🔗 橡皮筋：领跑者开到攻击类 → 50% 重掷
 const DEFENSE_KINDS = ['wall','shield','restore','stun'];                // 🔗 橡皮筋：垫底者开到防御类 → 50% 重掷
 function rollLegendaryKind(){ return LEGENDARY_KINDS[Math.floor(rnd()*LEGENDARY_KINDS.length)]; }
 function rollItemKind(){                   // 普通道具加权池（传说道具不进普通池）
@@ -2346,6 +2408,7 @@ function rollItemKind(){                   // 普通道具加权池（传说道�
   if (skillsOn) put('restore',2);
   put('trap',2); put('confusion',2); put('stun',1); put('shield',2);
   put('mushroom',2); put('shell',2); put('fakebox',1); put('dice',2); put('boomerang',2);
+  put('swapcard',1); put('skilladd',2);
   return pool[Math.floor(rnd()*pool.length)];
 }
 function spawnBox(cap=5){                // 每 itemInterval 秒：棋盘随机刷一个宝箱；全场上限 5，超出顶掉最旧（FIFO）
@@ -2414,6 +2477,17 @@ function pickupAt(p, cell){               // 拾取脚下宝箱：不满箱直�
   if (b.pending && b.pending.o!==p.color) return;   // 他人待选中的宝箱：锁住不可动
   if (p.inv.length >= INV_CAP){
     const nk = b.pending ? b.pending.k : (rnd()<0.03 ? rollLegendaryKind() : b.i);
+    if (nk==='stun'){                               // 💫 满箱开出眩晕：等价开箱直接触发，不进选择/不替换
+      boxes.splice(boxes.indexOf(b), 1);
+      applyStun(p);
+      logPush('💫 满箱踩中眩晕宝箱！暂停 1 回合', p.color);
+      return;
+    }
+    if (nk==='skilladd'){                           // 🎟️ 满箱踩中技能次数卡：等价开箱直接触发
+      boxes.splice(boxes.indexOf(b), 1);
+      triggerSkillAdd(p);
+      return;
+    }
     if (p.ai){ aiSwapDecide(p, b, nk); return; }
     if (!b.pending) b.pending = {k:nk, o:p.color};
     logPush('走到宝箱，道具箱已满 🎁 开盖待选（选一件替换或放弃）', p.color);
@@ -2429,13 +2503,15 @@ function pickupAt(p, cell){               // 拾取脚下宝箱：不满箱直�
     }
   }
   boxes.splice(boxes.indexOf(b), 1);
-  p.inv.push(kind);
+  if (kind!=='stun' && kind!=='skilladd') p.inv.push(kind);   // 💫眩晕/🎟️次数卡：开箱即触发不进箱
   sPick();
   fx.push({type:'openbox', x:b.x, y:b.y, i:kind, t0:performance.now()});
   netEv({type:'boxopen', x:b.x, y:b.y, i:kind});
   if (kind==='stun'){
     applyStun(p);
     logPush('💫 打开宝箱中了眩晕！暂停 1 回合', p.color);
+  }else if (kind==='skilladd'){
+    triggerSkillAdd(p);
   }else if (LEGENDARY_KINDS.includes(kind)){
     logPush('💎 开出传说道具 '+ITEMS[kind].icon+' '+ITEMS[kind].name+'！', p.color);
   }else{
@@ -2443,8 +2519,9 @@ function pickupAt(p, cell){               // 拾取脚下宝箱：不满箱直�
   }
   renderPanel();
 }
-const ITEM_VALUE = {stun:-1, wall:2, fakebox:3, dice:3, restore:3, boomerang:4, shell:4, hammer:5, trap:5, confusion:5, shield:6, mushroom:6};
+const ITEM_VALUE = {stun:-1, wall:2, fakebox:3, dice:3, restore:3, skilladd:3, boomerang:4, shell:4, swapcard:5, hammer:5, trap:5, confusion:5, shield:6, mushroom:6};
 function itemValue(k){ return (ITEMS[k] && ITEMS[k].legendary) ? 9 : (ITEM_VALUE[k]!=null ? ITEM_VALUE[k] : 3); }
+function invValue(p){ return p.inv.reduce((s,k)=>s+itemValue(k), 0); }   // 道具箱总价值（AI 偷窃目标评估）
 function aiSwapDecide(p, b, nk){             // AI 满箱取舍：新道具与最差旧件比价值，留最优 2 件
   const bi = boxes.indexOf(b); if (bi>=0) boxes.splice(bi,1);
   let wi=0;
@@ -2617,7 +2694,7 @@ function bestSmash(p){
   }
   return best;
 }
-const AI_SKILL_RANK = { phase:9, sprint:8, breakwall:7, swap:6, freeze:6, thronemove:5, shuffle:4, jump:3, steal:3, swapcolor:2 };
+const AI_SKILL_RANK = { phase:9, sprint:8, freeze:6, shuffle:4, jump:3, steal:3, swapcolor:2 };
 function aiPickSkill(offer){               // AI 选技：按强度排序取最高
   return offer.slice().sort((a,b)=>(AI_SKILL_RANK[b]||0)-(AI_SKILL_RANK[a]||0))[0];
 }
@@ -2630,14 +2707,13 @@ function aiUseSkill(p){                    // AI 用技启发式（免费即时�
   const lead=opps.slice().sort((a,b)=>dists[a.color]-dists[b.color])[0];
   const use=t=>execSkill(p, p.skill, t);
   switch(p.skill){
-    case 'breakwall': { const sm=bestSmash(p); return sm? use({kind:sm[0],x:sm[1],y:sm[2]}) : false; }
     case 'phase': {
       const dist=bfsFromThrone(wallsH,wallsV).dist;
       for(const[dx,dy]of DIRS){                       // 穿墙直达王座 → 直接赢
         const nx=p.cell.x+dx, ny=p.cell.y+dy;
         if (nx===THRONE.x && ny===THRONE.y && blocked(p.cell.x,p.cell.y,nx,ny)) return use({dx,dy});
       }
-      let best=null, gain=1;                          // 否则：穿墙缩短≥2 才用
+      let best=null, gain=(myD<=2?0:1);               // 终盘（dist≤2）缩短 1 步也值；平时缩短≥2 才用
       for(const[dx,dy]of DIRS){
         const nx=p.cell.x+dx, ny=p.cell.y+dy;
         if(!inB(nx,ny)||pawnAt(nx,ny)||!blocked(p.cell.x,p.cell.y,nx,ny)) continue;
@@ -2646,12 +2722,17 @@ function aiUseSkill(p){                    // AI 用技启发式（免费即时�
       }
       return best? use(best):false;
     }
-    case 'steal': { const v=opps.filter(q=>q.inv.length).sort((a,b)=>dists[a.color]-dists[b.color])[0]; return v? use({color:v.color}):false; }   // 优先偷领先者
-    case 'swap': { return (myD-dists[lead.color]>=3)? use({color:lead.color}):false; }
-    case 'swapcolor': { return (dists[lead.color]+2<=myD)? use({color:lead.color}):false; }   // 落后时捣乱
+    case 'steal': {                                    // 偷道具总价值最高的对手（价值相同才偏向前面的）
+      const v=opps.filter(q=>q.inv.length).sort((a,b)=>invValue(b)-invValue(a)||dists[a.color]-dists[b.color])[0];
+      return v? use({color:v.color}):false;
+    }
+    case 'swapcolor': {                                // 落后≥2 且目标墙≥2 才值得换色（偷墙）
+      if (dists[lead.color]+2>myD) return false;
+      const wc=Object.values(wallOwner).filter(c=>c===lead.color).length;
+      return wc>=2? use({color:lead.color}):false;
+    }
     case 'freeze': { return (dists[lead.color]<=3 && myD>dists[lead.color])? use({color:lead.color}):false; }
     case 'jump': { return (myD>=6 && myD-dists[lead.color]>=3)? use(null):false; }   // 落点随机：仅落后较多时赌一把
-    case 'thronemove': { return (myD>=6 && myD-dists[lead.color]>=3)? use(null):false; }
     case 'shuffle': { return (dists[lead.color]<=3 && myD>=dists[lead.color]+2)? use({color:lead.color}):false; }
     case 'sprint': { return myD>=1 && myD<=3? use(null):false; }      // 冲刺期双行动
   }
@@ -2695,7 +2776,7 @@ cv.addEventListener('click', e=>{
     return;
   }
   // 目标选择模式：🪤 点空格埋陷阱 / 🌀 点对手施放混乱，点空处取消
-  if (pendingItem==='trap' || pendingItem==='confusion' || pendingItem==='doom'){
+  if (pendingItem==='trap' || pendingItem==='confusion' || pendingItem==='doom' || pendingItem==='swapcard'){
     const pa = localFreeActor();
     if (!pa) return;
     const kind = pendingItem;
@@ -2708,7 +2789,7 @@ cv.addEventListener('click', e=>{
     else{
       const v=pawnAt(tx,ty);
       if (!v || v===pa || v.left){ toast('要点一名对手'); return; }
-      intent={type:'itemuse', kind: kind==='doom'?'doom':'confusion', t:{color:v.color}};
+      intent={type:'itemuse', kind: kind==='doom'?'doom':kind==='swapcard'?'swapcard':'confusion', t:{color:v.color}};
     }
     if (isOnline()){
       if (hostSim()) hostApplyAction(pa, intent);
@@ -2716,6 +2797,7 @@ cv.addEventListener('click', e=>{
     }else{
       const ok = kind==='trap' ? useTrapItem(pa, tx, ty)
                : kind==='doom'  ? useDoomItem(pa, pawnAt(tx,ty))
+               : kind==='swapcard' ? useSwapCardItem(pa, pawnAt(tx,ty))
                : useConfusionItem(pa, pawnAt(tx,ty));
       if (!ok) toast(kind==='trap' ? '那里埋不了陷阱' : '目标无效');
     }
@@ -2749,10 +2831,7 @@ cv.addEventListener('click', e=>{
     const r0=cv.getBoundingClientRect();
     const mx=(e.clientX-r0.left-PAD)/CELL, my=(e.clientY-r0.top-PAD)/CELL;
     let t=null;
-    if (sk.id==='breakwall'){
-      const sm=wallAt(mx,my);
-      if (sm) t={kind:sm[0], x:sm[1], y:sm[2]};
-    }else if (sk.id==='phase'){
+    if (sk.id==='phase'){
       const dx=Math.floor(mx)-pa.cell.x, dy=Math.floor(my)-pa.cell.y;
       if (Math.abs(dx)+Math.abs(dy)===1) t={dx,dy};
     }else if (sk.target==='pawn'){
@@ -2914,6 +2993,11 @@ function hostApplyAction(p, a){
   }else if (a.type==='itemuse' && a.kind==='doom'){
     const v = players.find(q=>q.color===(a.t||{}).color);
     if (!useDoomItem(p, v)) return reject('目标无效');
+  }else if (a.type==='itemuse' && a.kind==='swapcard'){
+    const v = players.find(q=>q.color===(a.t||{}).color);
+    if (!useSwapCardItem(p, v)) return reject('目标无效');
+  }else if (a.type==='itemuse' && a.kind==='thronemove'){
+    if (!useThroneQuakeItem(p)) return reject('没有 👑 王座地震');
   }else if (a.type==='itemuse' && a.kind==='megaphone'){
     if (!useMegaphoneItem(p)) return reject('没有 📢 大喇叭');
   }else if (a.type==='itemuse' && a.kind==='skate'){
@@ -2930,6 +3014,11 @@ function hostApplyAction(p, a){
     if (!useEclipseItem(p)) return reject('没有 🌑 日蚀');
   }else if (a.type==='itemuse' && a.kind==='fakebox'){
     if (!useFakeBoxItem(p)) return reject('已有假宝箱在场');
+  }else if (a.type==='itemuse' && a.kind==='stun'){
+    const i = p.inv.indexOf('stun');
+    if (i<0) return reject('没有 💫 眩晕');
+    p.inv.splice(i,1); applyStun(p); renderPanel();
+    logPush('💫 道具箱里的眩晕炸开：暂停 1 回合', p.color);
   }else if (a.type==='itemuse' && (a.kind==='shell' || a.kind==='boomerang' || a.kind==='bomb')){
     if (Math.abs(a.dx||0)+Math.abs(a.dy||0)!==1) return reject('方向无效');
     const ok = a.kind==='shell' ? useShellItem(p, a.dx, a.dy) : a.kind==='bomb' ? useBombItem(p, a.dx, a.dy) : useBoomerangItem(p, a.dx, a.dy);
@@ -3409,6 +3498,7 @@ function draw(now){
       const e=1-Math.pow(1-t,2);
       X=px(p.tween.fx+(p.cell.x-p.tween.fx)*e)+CELL/2;
       Y=px(p.tween.fy+(p.cell.y-p.tween.fy)*e)+CELL/2;
+      if (p.tween.jump) Y -= Math.sin(Math.PI*e)*CELL*0.85;     // 🏓 跳子：正弦腾空弧线（行程中点最高，起落贴地）
       if(t>=1) p.tween=null;
     }
     const isCur = !isSyncMode() && p===cp;
@@ -4075,13 +4165,14 @@ function clickInvSlot(p, i){          // 点击道具箱：🧱 +1 墙；🔨 �
       useBangItem(p);
       toast('💥 大爆炸！棋盘格局重组（含你自己）');
     }
-  }else if (kind==='trap' || kind==='confusion' || kind==='doom'){
+  }else if (kind==='trap' || kind==='confusion' || kind==='doom' || kind==='swapcard'){
     if (pendingItem===kind){ pendingItem=null; renderPanel(); return; }   // 再点一次取消
     pendingItem=kind;
     pendingSkill=null;                    // 与技能待选互斥
     renderPanel();
     toast(kind==='trap' ? '🪤 点击一个空格埋入陷阱（仅自己可见）'
         : kind==='doom'  ? '🎯 点击一名对手：标记下次暴雷/泥石流必命中'
+        : kind==='swapcard' ? '🔄 点击一名对手：与其互换位置'
         : '🌀 点击一名对手：混乱其下一步方向');
   }else if (kind==='megaphone'){
     if (isOnline()){
@@ -4099,14 +4190,23 @@ function clickInvSlot(p, i){          // 点击道具箱：🧱 +1 墙；🔨 �
       useSkateItem(p);
       toast('⛸️ 下一次移动将直线冲刺');
     }
-  }else if (kind==='mushroom' || kind==='dice' || kind==='blueshell' || kind==='hourglass' || kind==='eclipse' || kind==='fakebox'){
+  }else if (kind==='mushroom' || kind==='dice' || kind==='blueshell' || kind==='hourglass' || kind==='eclipse' || kind==='fakebox' || kind==='thronemove'){
     if (isOnline()){
       if (hostSim()) hostApplyAction(p, {type:'itemuse', kind});
       else { busy=true; setTimeout(()=>{busy=false;},2500); netSend({t:'act', a:{type:'itemuse', kind}}); }
     }else{
       const ok = kind==='mushroom'?useMushroomItem(p) : kind==='dice'?useDiceItem(p) : kind==='blueshell'?useBlueShellItem(p)
-               : kind==='hourglass'?useHourglassItem(p) : kind==='eclipse'?useEclipseItem(p) : useFakeBoxItem(p);
+               : kind==='hourglass'?useHourglassItem(p) : kind==='eclipse'?useEclipseItem(p) : kind==='thronemove'?useThroneQuakeItem(p) : useFakeBoxItem(p);
       if (!ok) toast(kind==='fakebox' ? '你已有假宝箱在场' : '无法使用');
+    }
+  }else if (kind==='stun'){                   // 💫 防御兜底：眩晕不主动可用——点它在箱里直接炸开（正常应开箱即触发，不进箱）
+    if (isOnline()){
+      if (hostSim()) hostApplyAction(p, {type:'itemuse', kind:'stun'});
+      else { busy=true; setTimeout(()=>{busy=false;},2500); netSend({t:'act', a:{type:'itemuse', kind:'stun'}}); }
+    }else{
+      p.inv.splice(i,1); applyStun(p); renderPanel();
+      toast('💫 眩晕在道具箱里炸开了！暂停 1 回合');
+      logPush('💫 道具箱里的眩晕炸开：暂停 1 回合', p.color);
     }
   }else if (kind==='shell' || kind==='boomerang' || kind==='bomb'){
     if (pendingItem===kind){ pendingItem=null; renderPanel(); return; }   // 再点一次取消
@@ -4165,7 +4265,7 @@ function syncSelects(){
 }
 function refreshHint(){
   const itemLine = itemsOn
-    ? '<b>道具开启</b>：棋盘每隔几秒出现 🎁 宝箱，走上去拾取（道具箱上限2）——🧱 +1 堵墙；🔨 砸碎一堵墙；🔋 恢复技能；🪤 埋陷阱；🌀 混乱对手；🛡️ 免疫 1 次技能/陷阱；💫 开箱即中眩晕；🍄 蘑菇冲 2 格；🐢 绿龟壳（撞墙反弹）；🎁 假宝箱（骗敌人踩）；🎲 命运骰子；🪃 回旋镖（打人+捎宝箱）。<br>💎 每个宝箱都有小概率直接开出<b>传说道具</b>（8 选 1）——💥 大爆炸；🎯 天灾指定；📢 大喇叭；⛸️ 溜冰鞋；🌀 蓝龟壳（锁定领跑者眩晕 5）；💣 炸弹兵（3×3 爆炸）；⏳ 时之沙漏（冻结他人 1 回合）；🌑 日蚀（黑暗 1 回合）。<br>🔗 开箱有橡皮筋：领跑者难开出攻击道具，垫底者难开出防御道具。<br>'
+    ? '<b>道具开启</b>：棋盘每隔几秒出现 🎁 宝箱，走上去拾取（道具箱上限2）——🧱 +1 堵墙；🔨 砸碎一堵墙；🔋 恢复技能；🎟️ 技能次数+1（开箱即触发）；🪤 埋陷阱；🌀 混乱对手；🛡️ 免疫 1 次技能/陷阱；💫 开箱即中眩晕；🍄 蘑菇冲 2 格；🐢 绿龟壳（撞墙反弹）；🎁 假宝箱（骗敌人踩）；🎲 命运骰子；🪃 回旋镖（打人+捎宝箱）；🔄 换位卡（与对手互换位置）。<br>💎 每个宝箱都有小概率直接开出<b>传说道具</b>（9 选 1）——💥 大爆炸；🎯 天灾指定；📢 大喇叭；⛸️ 溜冰鞋；🌀 蓝龟壳（锁定领跑者眩晕 5）；💣 炸弹兵（3×3 爆炸）；⏳ 时之沙漏（冻结他人 1 回合）；🌑 日蚀（黑暗 1 回合）；👑 王座地震（王座随机迁移）。<br>🔗 开箱有橡皮筋：领跑者难开出攻击道具，垫底者难开出防御道具。<br>'
     : '';
   const touchLine = touchMode ? '📱 <b>触屏放墙</b>：点格线先出预览，再点一次确认；点格子直接走子。<br>' : '';
   const lvlLine = levelId>0 ? LEVELS[levelId].icon+' <b>'+LEVELS[levelId].name+'</b>：'+LEVELS[levelId].desc+'<br>' : '';   // 关卡机制提示

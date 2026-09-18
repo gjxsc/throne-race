@@ -1848,8 +1848,9 @@ function endGame(p){
   const chain = campaignOn && !isOnline() && (!p.ai || mode==='spectate' || mode==='syncspec')
              && (levelId===campaignProg || campaignProg>=LEVELS.length-1);   // 🏆 全通关后：新一轮从第 1 关起每关取胜都推进（无限循环）
   if (chain){
-    if (levelId === LEVELS.length-1){
-      roundDone = true;                       // 🏆 第 4 关告捷：一轮闯关完成
+    const crownsSoFar = roundStats ? Object.values(roundStats).reduce((t,c)=>t+c.crowns,0) : 0;
+    if (levelId === LEVELS.length-1 && crownsSoFar >= LEVELS.length-1){
+      roundDone = true;                       // 🏆 第 4 关告捷且本轮已集满前 3 关王冠：一轮闯关完成（循环模式从中间关开打时不算完整一轮，顺延回第 1 关重新累计）
     }else if (levelId === campaignProg){
       campaignProg++; unlocked = true;
       try{ localStorage.setItem('tr_campaign', campaignProg); }catch(e){}
@@ -1983,25 +1984,69 @@ function aiTurn(){
     }
   }
 }
-function aiField(p){                    // 🤖 AI 个体感知场：地形危险加权、资源打折的 Dijkstra 距离（从王座反向扩散，代价=进入该格）
+function aiField(p, tx, ty){            // 🤖 AI 个体感知场：地形危险加权、资源打折的 Dijkstra 距离（默认从王座反向扩散；传 tx,ty 则以该格为目标——拾箱子目标）
   const cost = _fieldCost.fill(Infinity);   // 复用预分配缓冲：调用方 bestToward 同步读完毕即弃，无跨调用持有
   const done = _fieldDone.fill(0);
+  let gamble = null;   // 🎲 绝望赌搏：落后最近对手 ≥3 步（正常走几乎必输）时，位移装饰按「期望传送后距离」重新定价，博取靠近王座
+  if (tx==null){
+    const g0 = allDists();
+    const gMy = g0[p.color];
+    const gFoes = players.filter(q=>q!==p && !q.left);
+    if (gFoes.length && gMy - Math.min(...gFoes.map(q=>g0[q.color])) >= 3){
+      const gd = bfsFromThrone(wallsH,wallsV).dist;
+      const avg = a => a.length ? a.reduce((s,v)=>s+v,0)/a.length : 1e9;
+      const sc = []; const seenS = new Set();          // 🌪️ 暴风落点：各暴风旁 1 格（去重/可站/避王座）
+      for (const s of sandstorms)
+        for (let dx=-1;dx<=1;dx++) for (let dy=-1;dy<=1;dy++){
+          if (!dx && !dy) continue;
+          const nx=s.x+dx, ny=s.y+dy;
+          if (!inB(nx,ny) || seenS.has(ny*N+nx) || isSandstorm(nx,ny) || pawnAt(nx,ny) || (nx===THRONE.x&&ny===THRONE.y)) continue;
+          seenS.add(ny*N+nx); sc.push(gd[ny*N+nx]);
+        }
+      const bc = [];                                    // 🌨️ 暴风雪落点：全场可站格
+      for (let yy=0; yy<N; yy++) for (let xx=0; xx<N; xx++){
+        if ((xx===THRONE.x&&yy===THRONE.y) || isCollapsed(xx,yy)) continue;
+        bc.push(gd[yy*N+xx]);
+      }
+      gamble = { myD:gMy, stormE:avg(sc), boardE:avg(bc), spawnD: gd[SPAWN[p.color].y*N+SPAWN[p.color].x] };
+    }
+  }
   const step = (x,y)=>{
-    if (isCollapsed(x,y) || isLava(x,y)) return Infinity;        // 🕳️ 塌陷不可入 / 🌋 岩浆不踩（沿用避岩浆语义）
-    if (isSandstorm(x,y)) return 5;                              // 🌪️ 暴风：随机传送，大亏
+    if (isLava(x,y)) return Infinity;                            // 🌋 岩浆不踩（沿用避岩浆语义）
+    if (isCollapsed(x,y)) return Infinity;                       // 🕳️ 塌陷：不可入（绝望赌搏经伪源注入表达）
+    if (isSandstorm(x,y)) return 5;                              // 🌪️ 暴风：随机传送，大亏（绝望时经伪源注入表达）
     if (levelId===2){
       const ice = iceCells.find(c=>c.x===x&&c.y===y);
       if (ice) return ice.hp<=1 ? 7 : 1.5;                       // 🧊 快碎的冰≈坠回出生点；完整冰轻代价
     }
-    if (isBlizzard(x,y)) return 4;                               // 🌨️ 暴风雪：同格弹飞
+    if (isBlizzard(x,y)) return 4;                               // 🌨️ 暴风雪：同格弹飞（绝望时经伪源注入表达）
     if (levelId===2 && !isBlizzard(x,y)){                        // 🌨️ 邻格轻防：暴风雪每回合先动，可能移过来
       for(const[dx,dy]of DIRS) if (isBlizzard(x+dx,y+dy)) return 1.6;
+    }
+    if (levelId===3 && worms.length && wormRounds>=4){            // 🪱 虫临砸预警（下一轮砸落）：砸落带重惩罚
+      const wlen = Math.floor(N/3);
+      for (const w of worms){
+        if (w.side===0 && x===w.pos && y<wlen) return 6;
+        if (w.side===1 && y===w.pos && x>=N-wlen) return 6;
+        if (w.side===2 && x===w.pos && y>=N-wlen) return 6;
+        if (w.side===3 && y===w.pos && x<wlen) return 6;
+      }
+    }
+    if (levelId===3 && dragon && dragon.flown >= (LEVELS[3].dragonEvery||8)-1){   // 🐉 龙冲顶临前：中间 3 列将喷火扫人，重惩罚
+      const dcx = Math.floor(N/2);
+      if (x>=dcx-1 && x<=dcx+1) return 6;
     }
     if (levelId===1 && !(p.camel>0) && camels.some(c=>c.x===x&&c.y===y)) return 0.3;   // 🐪 骆驼：5 回合 +1 行动，强吸引
     if (p.inv.length < INV_CAP && boxAt(x,y)) return 0.6;        // 🎁 宝箱：等价允许小绕路拾取
     return 1;
   };
-  cost[THRONE.y*N+THRONE.x]=0;
+  cost[(ty!=null?ty:THRONE.y)*N + (tx!=null?tx:THRONE.x)]=0;
+  if (gamble){                    // 🎲 绝望赌搏伪源：传送装饰格按「期望传送后距离」入图——AI 视其为传送门（踩入=跳到期望位置），路径穿越仍按原惩罚
+    const put = (x,y,v) => { const gi=y*N+x; if (v < cost[gi]) cost[gi]=v; };
+    if (gamble.stormE < gamble.myD-2) for (const s of sandstorms) put(s.x, s.y, gamble.stormE);
+    if (gamble.boardE < gamble.myD-2) for (const bz of blizzards) put(bz.x, bz.y, gamble.boardE);
+    if (gamble.spawnD < gamble.myD-2) for (const c of collapsed) put(c.x, c.y, gamble.spawnD);
+  }
   for(;;){                          // Dijkstra：N²≤225 节点，线性扫最小值足够快
     let bi=-1, bd=Infinity;
     for(let i=0;i<N*N;i++) if(!done[i]&&cost[i]<bd){bd=cost[i];bi=i;}
@@ -2021,8 +2066,33 @@ function aiField(p){                    // 🤖 AI 个体感知场：地形危�
   }
   return cost;
 }
+function aiBoxTarget(p, myD, dists){  // 🤖 需求驱动拾箱：按欲望绕路预算选目标箱（detour≤预算），无合适箱返回 null
+  if (p.inv.length >= INV_CAP || !boxes.length) return null;
+  let budget = p.inv.length===0 ? 4 : 2;      // 空箱明显主动抢，1 件小幅补给
+  const foes = players.filter(q=>q!==p && !q.left);
+  if (foes.length){
+    if (foes.every(q=>dists[q.color] <= myD)) budget += 2;    // 垫底：橡皮筋加成，更需要道具翻盘
+    if (foes.every(q=>dists[q.color] >= myD)) budget -= 1;    // 领跑：专注冲刺
+  }
+  if (budget <= 0) return null;
+  const base = aiField(p).slice();            // 直达王座感知场（复制快照：aiField 复用缓冲，会被后续调用覆盖）
+  const myCost = base[p.cell.y*N+p.cell.x];
+  if (!isFinite(myCost)) return null;
+  let best=null, bd=1e9;
+  for (const b of boxes){
+    if (b.pending) continue;                  // 他人开盖待选的箱不动
+    const f = aiField(p, b.x, b.y);           // 以该箱为目标的感知场
+    const cToBox = f[p.cell.y*N+p.cell.x];
+    if (!isFinite(cToBox)) continue;
+    const detour = cToBox + base[b.y*N+b.x] - 0.6 - myCost;   // 绕路代价 = 到箱 + 箱到王座 − 直达（两场各含一次箱格折扣，扣除双计）
+    if (detour <= budget && detour < bd){ bd=detour; best=b; }
+  }
+  return best;
+}
 function bestToward(p, ms){
-  const dist = aiField(p);           // 🤖 加权感知场选路：避暴风/碎冰/暴风雪/岩浆，追骆驼/宝箱
+  const dists = allDists();
+  const box = aiBoxTarget(p, dists[p.color], dists);   // 🤖 需求驱动拾箱：预算内选定目标箱，寻路临时奔箱
+  const dist = box ? aiField(p, box.x, box.y) : aiField(p);   // 加权感知场选路：避暴风/碎冰/暴风雪/岩浆，追骆驼/宝箱/目标箱
   let best=ms[0], bd=Infinity;
   for(const c of ms){ const d=dist[c.y*N+c.x]; if(d<bd){bd=d;best=c;} }
   return best;

@@ -1438,7 +1438,7 @@ function useBoomerangItem(p, dx, dy){       // 🪃 回旋镖：飞 4 格折返�
   let took=0;                              // 捎箱：路径上的非传说宝箱
   for (let k=1;k<path.length;k++){
     const [bx,by]=path[k];
-    const bi = boxes.findIndex(b=>b.x===bx && b.y===by && !b.lg);
+    const bi = boxes.findIndex(b=>b.x===bx && b.y===by);
     if (bi>=0 && p.inv.length < INV_CAP){
       const b=boxes[bi]; boxes.splice(bi,1);
       p.inv.push(b.i); took++;
@@ -2278,8 +2278,7 @@ function spawnBox(cap=5){                // 每 itemInterval 秒：棋盘随机�
   while (boxes.length >= cap) boxes.shift();
   const c = randCell((x,y)=>!boxAt(x,y) && !trapAt(x,y) && !fakeBoxAt(x,y));
   if (!c) return;
-  const lg = rnd() < 0.05;                   // 💎 传说宝箱：5% 替换刷箱，内容开箱时才定型
-  boxes.push({x:c.x, y:c.y, i: lg ? null : rollItemKind(), lg});
+  boxes.push({x:c.x, y:c.y, i: rollItemKind()});   // 统一宝箱：外观相同，传说道具在开箱时小概率掷出
   fx.push({type:'boxin', x:c.x, y:c.y, t0:performance.now()});
   netEv({type:'boxspawn', x:c.x, y:c.y});
 }
@@ -2340,14 +2339,14 @@ function pickupAt(p, cell){               // 拾取脚下宝箱：不满箱直�
   if (!b) return;
   if (b.pending && b.pending.o!==p.color) return;   // 他人待选中的宝箱：锁住不可动
   if (p.inv.length >= INV_CAP){
-    const nk = b.pending ? b.pending.k : (b.lg ? (rnd()<0.1 ? rollLegendaryKind() : rollItemKind()) : b.i);
+    const nk = b.pending ? b.pending.k : (rnd()<0.03 ? rollLegendaryKind() : b.i);
     if (p.ai){ aiSwapDecide(p, b, nk); return; }
     if (!b.pending) b.pending = {k:nk, o:p.color};
     logPush('走到宝箱，道具箱已满 🎁 开盖待选（选一件替换或放弃）', p.color);
     return;
   }
-  let kind = b.lg ? (rnd()<0.1 ? rollLegendaryKind() : rollItemKind()) : b.i;
-  if (!b.lg){                                // 🔗 橡皮筋：普通箱按开箱者名次重掷一次（host 权威 rnd，联机一致）
+  let kind = rnd() < 0.03 ? rollLegendaryKind() : b.i;   // 🎁 统一池：开箱 3% 直接掷传说道具（开箱定型，host 权威）
+  if (kind === b.i){                          // 🔗 橡皮筋：普通结果按开箱者名次重掷一次（重掷只出普通池）
     const d = allDists();
     const act = players.filter(q=>!q.left).sort((a,c)=>d[a.color]-d[c.color]);
     if (act.length>1){
@@ -2363,8 +2362,8 @@ function pickupAt(p, cell){               // 拾取脚下宝箱：不满箱直�
   if (kind==='stun'){
     applyStun(p);
     logPush('💫 打开宝箱中了眩晕！暂停 1 回合', p.color);
-  }else if (b.lg && kind==='bang'){
-    logPush('💎 传说宝箱开出传说道具 💥 大爆炸！（点击道具箱引爆）', p.color);
+  }else if (LEGENDARY_KINDS.includes(kind)){
+    logPush('💎 开出传说道具 '+ITEMS[kind].icon+' '+ITEMS[kind].name+'！', p.color);
   }else{
     logPush('🎁 打开宝箱获得 '+ITEMS[kind].icon+' '+ITEMS[kind].name, p.color);
   }
@@ -3271,22 +3270,20 @@ function draw(now){
     ctx.fillText('🕳️', X+CELL/2, Y+CELL/2+2);
     ctx.restore();
   }
-  // 宝箱（实心暗金底衬 + 悬浮 + 呼吸辉光，金边确保深底上醒目；💎 传说宝箱：彩虹渐变 + 金光呼吸更醒目）
+  // 宝箱（实心暗金底衬 + 悬浮 + 呼吸辉光，金边确保深底上醒目；开盖待选时直接显示箱内道具图标）
   for(const b of boxes){
     const bob = 2.5*Math.sin(now/300 + b.x*1.3 + b.y*0.9);
     const X=px(b.x), Y=px(b.y)+bob;
     ctx.save();
     const bg = ctx.createLinearGradient(X,Y,X+CELL,Y+CELL);
-    if (b.lg){ bg.addColorStop(0,'#ffd700'); bg.addColorStop(.5,'#ff6ec7'); bg.addColorStop(1,'#58c7ff'); }
-    else{ bg.addColorStop(0,'#8a6a1e'); bg.addColorStop(1,'#57400f'); }
+    bg.addColorStop(0,'#8a6a1e'); bg.addColorStop(1,'#57400f');
     ctx.fillStyle=bg;
     rr(X+3,Y+3,CELL-6,CELL-6, Math.max(4,CELL*0.16)); ctx.fill();
     ctx.strokeStyle='rgba(253,202,0,.9)'; ctx.lineWidth=2;
     rr(X+3,Y+3,CELL-6,CELL-6, Math.max(4,CELL*0.16)); ctx.stroke();
-    ctx.shadowColor = b.lg ? 'rgba(255,215,0,.9)' : 'rgba(253,202,0,.55)';
-    ctx.shadowBlur = b.lg ? 15+8*Math.sin(now/160+b.x) : 10+4*Math.sin(now/200+b.x);
+    ctx.shadowColor='rgba(253,202,0,.55)'; ctx.shadowBlur=10+4*Math.sin(now/200+b.x);
     ctx.font=Math.floor(CELL*0.62)+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText(b.pending ? (ITEMS[b.pending.k]||{icon:'🎁'}).icon : (b.lg?'💎':'🎁'), X+CELL/2, Y+CELL/2+2);
+    ctx.fillText(b.pending ? (ITEMS[b.pending.k]||{icon:'🎁'}).icon : '🎁', X+CELL/2, Y+CELL/2+2);
     ctx.restore();
   }
   // 假宝箱（暗金无光晕、静止不悬浮——细看可辨的公平线索）
@@ -4077,7 +4074,7 @@ function syncSelects(){
 }
 function refreshHint(){
   const itemLine = itemsOn
-    ? '<b>道具开启</b>：棋盘每隔几秒出现 🎁 宝箱，走上去拾取（道具箱上限2）——🧱 +1 堵墙；🔨 砸碎一堵墙；🔋 恢复技能；🪤 埋陷阱；🌀 混乱对手；🛡️ 免疫 1 次技能/陷阱；💫 开箱即中眩晕；🍄 蘑菇冲 2 格；🐢 绿龟壳（撞墙反弹）；🎁 假宝箱（骗敌人踩）；🎲 命运骰子；🪃 回旋镖（打人+捎宝箱）。<br>💎 <b>传说宝箱</b>（5% 出现，彩虹金光）：开箱 10% 掷出传说道具（8 选 1）——💥 大爆炸；🎯 天灾指定；📢 大喇叭；⛸️ 溜冰鞋；🌀 蓝龟壳（锁定领跑者眩晕 5）；💣 炸弹兵（3×3 爆炸）；⏳ 时之沙漏（冻结他人 1 回合）；🌑 日蚀（黑暗 1 回合）。<br>🔗 开箱有橡皮筋：领跑者难开出攻击道具，垫底者难开出防御道具。<br>'
+    ? '<b>道具开启</b>：棋盘每隔几秒出现 🎁 宝箱，走上去拾取（道具箱上限2）——🧱 +1 堵墙；🔨 砸碎一堵墙；🔋 恢复技能；🪤 埋陷阱；🌀 混乱对手；🛡️ 免疫 1 次技能/陷阱；💫 开箱即中眩晕；🍄 蘑菇冲 2 格；🐢 绿龟壳（撞墙反弹）；🎁 假宝箱（骗敌人踩）；🎲 命运骰子；🪃 回旋镖（打人+捎宝箱）。<br>💎 每个宝箱都有小概率直接开出<b>传说道具</b>（8 选 1）——💥 大爆炸；🎯 天灾指定；📢 大喇叭；⛸️ 溜冰鞋；🌀 蓝龟壳（锁定领跑者眩晕 5）；💣 炸弹兵（3×3 爆炸）；⏳ 时之沙漏（冻结他人 1 回合）；🌑 日蚀（黑暗 1 回合）。<br>🔗 开箱有橡皮筋：领跑者难开出攻击道具，垫底者难开出防御道具。<br>'
     : '';
   const touchLine = touchMode ? '📱 <b>触屏放墙</b>：点格线先出预览，再点一次确认；点格子直接走子。<br>' : '';
   const lvlLine = levelId>0 ? LEVELS[levelId].icon+' <b>'+LEVELS[levelId].name+'</b>：'+LEVELS[levelId].desc+'<br>' : '';   // 关卡机制提示
@@ -4122,7 +4119,7 @@ function serializeState(){
   return {
     sync: isSyncMode(), watch: netWatch, N, throne:{x:THRONE.x, y:THRONE.y},
     wallsH: [...wallsH], wallsV: [...wallsV], wallOwner,
-    boxes: boxes.map(b=>({x:b.x, y:b.y, i:b.i, lg:b.lg?1:0, pend: b.pending ? {k:b.pending.k, o:b.pending.o} : null})),
+    boxes: boxes.map(b=>({x:b.x, y:b.y, i:b.i, pend: b.pending ? {k:b.pending.k, o:b.pending.o} : null})),
     fb: fakeBoxes.map(b=>({x:b.x, y:b.y, o:b.o})),
     traps: traps.map(t=>({x:t.x, y:t.y, o:t.o})),
     disastersOn, disasterInterval, nd: nextDisaster,
@@ -4166,7 +4163,7 @@ function applySnapshot(s, ev){
   wallsH = new Set(s.wallsH);
   wallsV = new Set(s.wallsV);
   wallOwner = { ...s.wallOwner };
-  boxes = (s.boxes||[]).map(b=>({x:b.x, y:b.y, i:b.i, lg:!!b.lg, pending: b.pend ? {k:b.pend.k, o:b.pend.o} : null}));
+  boxes = (s.boxes||[]).map(b=>({x:b.x, y:b.y, i:b.i, pending: b.pend ? {k:b.pend.k, o:b.pend.o} : null}));
   fakeBoxes = (s.fb||[]).map(b=>({x:b.x, y:b.y, o:b.o}));
   traps = (s.traps||[]).map(t=>({x:t.x, y:t.y, o:t.o}));
   const prevColl = new Set(collapsed.map(c=>c.x+','+c.y));      // 快照 diff：消失的塌陷格 = 已恢复（远端补播 ✨ 动画）

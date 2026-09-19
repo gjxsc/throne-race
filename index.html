@@ -238,6 +238,7 @@
       <div class="btnrow">
         <button id="btnMute">🔊 音效</button>
         <button id="btnSpeed" title="AI 行棋速度">⚡ 正常</button>
+        <button id="btnPause" title="暂停/继续 AI 对局" style="display:none">⏸ 暂停</button>
       </div>
     </div>
     <div class="card" id="hint">
@@ -287,7 +288,6 @@ const kk = (x,y)=>_keys[(y+1)*(N+2)+x+1];          // K(x,y) 的查表版：热�
 const SKILLS = [
   {id:'phase',     icon:'👻', name:'穿墙',     target:'wall', desc:'穿过身边一堵墙，落到墙另一侧的空格'},
   {id:'steal',     icon:'🪓', name:'盗取道具', target:'pawn', desc:'夺取一名对手道具箱里的 1 个道具'},
-  {id:'swapcolor', icon:'🎨', name:'换色',     target:'pawn', desc:'与指定角色互换颜色（棋子与墙）'},
   {id:'freeze',    icon:'❄️', name:'定身术',   target:'pawn', desc:'指定角色 1 回合不可操作（同步模式冻结 3 秒）'},
   {id:'jump',      icon:'🎲', name:'随机跳跃', target:null,   desc:'随机传送到任意空格（不会落到王座附近）'},
   {id:'shuffle',   icon:'🌀', name:'指定角色随机换位', target:'pawn', desc:'把指定角色随机传送到任意空格（不会送到王座附近）'},
@@ -372,8 +372,13 @@ function resetRoundStats(){
   for (const c of ['blue','green','red','orange']) roundStats[c] = {sabotage:0, items:0, steps:0, disaster:0, crowns:0};
 }
 let aiTimer = null;
+let paused = false;      // ⏸ 观战暂停：挡住 AI 推进/宝箱时钟/同步 AP 回复/自动续局（按钮仅观战模式显示）
 const SYNC_CD = 500;      // 同步模式：动作间隔（毫秒）
 const SYNC_APMAX = 3;     // 同步模式：操作点上限
+function autoNext(fn, delay){   // ⏸ 观战自动续局：暂停时挂起轮询，恢复后立即执行
+  const t = ()=>{ if (paused){ setTimeout(t, 400); return; } fn(); };
+  setTimeout(t, delay);
+}
 function isSyncMode(){ return mode==='sync' || mode==='syncspec' || mode==='onsync'; }
 function isOnline(){ return mode==='online' || mode==='onsync'; }
 function hostSim(){       // 在线模式下只有房主跑游戏逻辑（AI、道具、规则判定）
@@ -564,6 +569,9 @@ function generateLevel(){
 function newGame(){
   clearTimeout(aiTimer);
   gameSeq++;                                  // 新对局：作废上一局遗留的滚石等延迟结算定时器
+  paused = false;                             // ⏸ 新局解除暂停
+  const _bp = document.getElementById('btnPause');
+  if (_bp){ _bp.style.display = (mode==='spectate'||mode==='syncspec') ? '' : 'none'; _bp.textContent = '⏸ 暂停'; }
   wallsH.clear(); wallsV.clear(); wallOwner = {};
   players = ['blue','green','red','orange'].map(c=>{
     const human = (mode==='hotseat') || ((mode==='pve'||mode==='sync') && c==='blue');
@@ -603,7 +611,7 @@ function newGame(){
   else if (!isSyncMode()){ autoPassIfNeeded(); scheduleAI(); }
 }
 
-/* ---- 开局选技（每人从 7 个技能随机抽 3 选 1；AI 自动；全选完才开局） ---- */
+/* ---- 开局选技（每人从 6 个技能随机抽 3 选 1；AI 自动；全选完才开局） ---- */
 function startDraft(){
   draft = {offers:{}, picked:{}, queue:[]};
   for(const p of players){
@@ -831,13 +839,6 @@ function execSkill(p, id, t){                  // t：{kind,x,y}=墙 / {dx,dy}=�
       toast(COLORS[p.color].name+' 🪓 夺走了 '+COLORS[v.color].name+' 的道具');
       stHit(p, 'sabotage');                   // 🗡️ 一轮闯关统计：坑害对手
       done = true; break; }
-    case 'swapcolor': {                        // 🎨 与目标互换显示色（棋子与墙）
-      const v=players.find(q=>q.color===t.color);
-      if (!v || v===p) return false;
-      if (v.shield) return shieldBlockSkill(p, v, sk);
-      const da=p.paint||p.color, db=v.paint||v.color;
-      p.paint=db; v.paint=da;
-      sPick(); netEv({type:'skill', fx:'pick'}); stHit(p, 'sabotage'); done = true; break; }
     case 'freeze': {                           // ❄️ 定身：经典=下回合跳过 / 同步=3 秒不能动
       const v=players.find(q=>q.color===t.color);
       if (!v || v===p) return false;
@@ -1791,7 +1792,7 @@ function endDraw(){
   document.getElementById('btnAgain').onclick=()=> isOnline()? netStartRound() : newGame();
   const bx=document.getElementById('btnNetExit'); if (bx) bx.onclick=()=>netLeave();
   if (mode==='spectate' || mode==='syncspec'){
-    setTimeout(()=>{ if (winner==='draw') newGame(); }, 5000);   // 本地观战：平局也自动续局（原先只有胜利/联机观战会续，挂机撞上平局即永久停摆）
+    autoNext(()=>{ if (winner==='draw') newGame(); }, 5000);   // 本地观战：平局也自动续局（原先只有胜利/联机观战会续，挂机撞上平局即永久停摆）
   }
   if (isOnline() && netWatch && hostSim()){
     setTimeout(()=>{ if (winner==='draw' && netWatch && net.phase==='playing') netStartRound(); }, 5000);
@@ -1858,7 +1859,7 @@ function showRoundSettlement(p){
     render();
     if (stage < 4){ stage++; setTimeout(tick, stage===4?1500:1300); }
     else if (mode==='spectate' || mode==='syncspec'){
-      setTimeout(()=>{ if (!closed && winner===p) startNewRound(); }, 8000);   // 观战自动循环新一轮
+      autoNext(()=>{ if (!closed && winner===p) startNewRound(); }, 8000);   // 观战自动循环新一轮
     }
   }
   ov.classList.add('show');
@@ -1896,7 +1897,7 @@ function endGame(p){
   const ov=document.getElementById('overlay'), pn=document.getElementById('ovPanel');
   const btns = isOnline()
     ? `<button class="primary" id="btnAgain">${netWatch?'立即下一局':'再来一局'}</button><button id="btnNetExit">离开房间</button>`
-    : '<button class="primary" id="btnAgain">再来一局</button><button id="btnWatch">看 AI 互坑</button>';
+    : `<button class="primary" id="btnAgain">${advanced? '🚀 进入第 '+(nextLv+1)+' 关 · '+LEVELS[nextLv].name : '再来一局'}</button><button id="btnWatch">看 AI 互坑</button>`;
   pn.innerHTML = `
     <h2 style="color:${COLORS[p.color].main}; text-shadow:0 0 24px ${COLORS[p.color].main}66">
       👑 ${(p.name||COLORS[p.color].name)} 获胜！</h2>
@@ -1905,7 +1906,7 @@ function endGame(p){
       ${players.map(q=>`<span style="color:${COLORS[q.color].main}"><i></i>${q.name||COLORS[q.color].name}${q===p?' 👑':''}</span>`).join('')}
     </div>
     <div class="btnrow">${btns}</div>
-    ${advanced? `<div class="ndim" style="margin-top:8px">🏁 闯关成功！${unlocked?'已解锁':'进入'} ${LEVELS[nextLv].icon} 第${nextLv+1}关 ${LEVELS[nextLv].name}，${(mode==='spectate'||mode==='syncspec')?'5 秒后自动进入下一关':'点「再来一局」继续闯关'}</div>`:''}
+    ${advanced? `<div class="ndim" style="margin-top:8px">🏁 闯关成功！${unlocked?'已解锁':'进入'} ${LEVELS[nextLv].icon} 第${nextLv+1}关 ${LEVELS[nextLv].name}，${(mode==='spectate'||mode==='syncspec')?'5 秒后自动进入下一关':'点「🚀 进入下一关」继续征程'}</div>`:''}
     ${isOnline()&&netWatch?'<div class="ndim" style="margin-top:8px">观战模式 · 5 秒后自动开始下一局</div>':''}`;
   ov.classList.add('show');
   document.getElementById('btnAgain').onclick = ()=>{
@@ -1916,7 +1917,7 @@ function endGame(p){
   const bw=document.getElementById('btnWatch'); if (bw) bw.onclick = ()=>{ mode='spectate'; newGame(); };
   const bx=document.getElementById('btnNetExit'); if (bx) bx.onclick = ()=>netLeave();
   if (mode==='spectate' || mode==='syncspec'){
-    setTimeout(()=>{ if(winner===p){ if (advanced){ levelId = nextLv; refreshLevelSel(); } newGame(); } }, 5000);   // 🏁 闯关解锁：自动进下一关（循环模式顺延）
+    autoNext(()=>{ if(winner===p){ if (advanced){ levelId = nextLv; refreshLevelSel(); } newGame(); } }, 5000);   // 🏁 闯关解锁：自动进下一关（循环模式顺延）
   }else if (isOnline() && netWatch && hostSim()){
     setTimeout(()=>{ if (winner===p && netWatch && net.phase==='playing') netStartRound(); }, 5000);
   }
@@ -1934,7 +1935,7 @@ function scheduleAI(){
 }
 function aiTurn(){
   const p = cur();
-  if (winner || !p.ai) return;
+  if (winner || !p.ai || paused) return;   // ⏸ 观战暂停：恢复时由按钮回调 scheduleAI 重启
   const dists = allDists();
   const myD = dists[p.color];
   const opps = players.filter(q=>q!==p && !q.left);
@@ -2109,11 +2110,13 @@ function aiField(p, tx, ty){            // 🤖 AI 个体感知场：地形危�
 }
 function aiBoxTarget(p, myD, dists){  // 🤖 需求驱动拾箱：按欲望绕路预算选目标箱（detour≤预算），无合适箱返回 null
   if (p.inv.length >= INV_CAP || !boxes.length) return null;
-  let budget = p.inv.length===0 ? 4 : 2;      // 空箱明显主动抢，1 件小幅补给
+  if (myD <= 3) return null;                  // 🏁 终盘冲刺：离王座 ≤3 步直奔胜利，绝不被宝箱带偏（防止箱座间徘徊弃胜）
+  let budget = p.inv.length===0 ? 5 : 3;      // 空箱明显主动抢，1 件也积极补给（期待值整体上调）
   const foes = players.filter(q=>q!==p && !q.left);
   if (foes.length){
-    if (foes.every(q=>dists[q.color] <= myD)) budget += 2;    // 垫底：橡皮筋加成，更需要道具翻盘
-    if (foes.every(q=>dists[q.color] >= myD)) budget -= 1;    // 领跑：专注冲刺
+    if (foes.every(q=>dists[q.color] <= myD)) budget += 2;          // 垫底：橡皮筋加成，更需要道具翻盘
+    else if (foes.some(q=>dists[q.color] + 2 <= myD)) budget += 1;  // 明显落后（差≥2）：也加拾箱欲望
+    if (foes.every(q=>dists[q.color] >= myD)) budget -= 1;          // 领跑：专注冲刺
   }
   if (budget <= 0) return null;
   const base = aiField(p).slice();            // 直达王座感知场（复制快照：aiField 复用缓冲，会被后续调用覆盖）
@@ -2133,7 +2136,13 @@ function aiBoxTarget(p, myD, dists){  // 🤖 需求驱动拾箱：按欲望绕�
 function bestToward(p, ms, force){           // 🤖 加权感知场选路：避暴风/碎冰/暴风雪/岩浆，追骆驼/宝箱/目标箱
   const dists = allDists();                   // 回头滞回：排除上一步来源格（唯一候选或场值差≥2 明显更优才豁免）——防 A↔B 二循环震荡
   const box = aiBoxTarget(p, dists[p.color], dists);   // 🤖 需求驱动拾箱：预算内选定目标箱，寻路临时奔箱
-  const dist = box ? aiField(p, box.x, box.y) : aiField(p);
+  let dist = box ? aiField(p, box.x, box.y) : aiField(p);
+  if (!isFinite(dist[p.cell.y*N+p.cell.x])){  // 🤖 感知不可达（被墙+惩罚格围出的死区）：退化物理 BFS 选路，防止场值 Infinity 导致全员冻结
+    const bd = bfsFromThrone(wallsH, wallsV).dist;
+    const arr = new Array(N*N);
+    for(let i=0;i<N*N;i++) arr[i] = bd[i]<0 ? Infinity : bd[i];
+    dist = arr;
+  }
   const back = c => p.lastStep && c.x===p.lastStep.x && c.y===p.lastStep.y;
   let bAll=null, dAll=Infinity, bNb=null, dNb=Infinity;
   for(const c of ms){
@@ -2142,15 +2151,80 @@ function bestToward(p, ms, force){           // 🤖 加权感知场选路：避
     if(!back(c) && d<dNb){ dNb=d; bNb=c; }
   }
   let best;
+  const backGap = dists[p.color] <= 3 ? 0.5 : 2;          // 🏁 终盘冲刺期回头豁免放宽：直冲王座优先，不被滞回拖慢
   if (!bNb) best = bAll;                                   // 候选全是回头格：唯一选择豁免
-  else if (bAll && back(bAll) && dAll <= dNb-2) best = bAll;   // 回头格明显更优才豁免
+  else if (bAll && back(bAll) && dAll <= dNb-backGap) best = bAll;   // 回头格明显更优才豁免
   else best = bNb;
   if (!best) return null;
-  if (!force){                                             // 🤖 无收益判定：最优候选场值不降 = 已在局部最优 → null（上层等待/放墙；force=僵局破除强走）
+  if (!force){                                             // 🤖 无收益判定：仅「严格变差」才等待；等值绕行放行（滞回已防回头摆动）
     const cur = dist[p.cell.y*N+p.cell.x];
-    if (dist[best.y*N+best.x] >= cur-0.01) return null;
+    if (dist[best.y*N+best.x] > cur + 0.01) return null;
   }
   return best;
+}
+function aiBombDir(p, dists){               // 💣 四方向评分：命中敌数×10 + Σ(20−敌dist)，绝不自炸，无收益返回 null
+  let best=null, bs=0;
+  for (const [ddx,ddy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+    let x=p.cell.x, y=p.cell.y;
+    for (let s=0;s<3;s++){
+      const nx=x+ddx, ny=y+ddy;
+      if (!inB(nx,ny) || blocked(x,y,nx,ny)) break;
+      x=nx; y=ny;
+      if (pawnAt(x,y)) break;
+    }
+    let sc=0, selfHit=false;
+    for (const q of players){
+      if (q.left || Math.abs(q.cell.x-x)>1 || Math.abs(q.cell.y-y)>1) continue;
+      if (q===p) selfHit=true; else sc += 10 + (20 - dists[q.color]);
+    }
+    if (!selfHit && sc>bs){ bs=sc; best=[ddx,ddy]; }
+  }
+  return best;
+}
+function aiProjectileDir(p, dists){         // 🐢🪃 四方向模拟：命中价值最高（dist 最小）敌人的方向，无目标返回 null
+  let best=null, bt=1e9;
+  for (const [ddx,ddy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+    let x=p.cell.x, y=p.cell.y, q0=null;
+    for (let s=0;s<6;s++){
+      const nx=x+ddx, ny=y+ddy;
+      if (!inB(nx,ny) || blocked(x,y,nx,ny)) break;
+      x=nx; y=ny;
+      const q=pawnAt(x,y);
+      if (q && q!==p && !q.left){ q0=q; break; }
+    }
+    if (q0 && dists[q0.color] < bt){ bt=dists[q0.color]; best=[ddx,ddy]; }
+  }
+  return best;
+}
+function aiSkateOk(p){                      // ⛸️ 任一方向滑行终点更近王座才值得用
+  const sdist = bfsFromThrone(wallsH,wallsV).dist;
+  const cur = sdist[p.cell.y*N+p.cell.x];
+  for (const [ddx,ddy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+    let x=p.cell.x, y=p.cell.y;
+    while (true){
+      const nx=x+ddx, ny=y+ddy;
+      if (!inB(nx,ny) || blocked(x,y,nx,ny) || isCollapsed(nx,ny) || pawnAt(nx,ny)) break;
+      x=nx; y=ny;
+    }
+    if ((x!==p.cell.x||y!==p.cell.y) && sdist[y*N+x] < cur) return true;
+  }
+  return false;
+}
+function aiMegaphoneOk(p, foes){            // 📢 半径 4 内有敌或 ≥2 堵墙（踢飞/碎墙必有斩获）
+  const cx=p.cell.x, cy=p.cell.y, md=(x,y)=>Math.abs(x-cx)+Math.abs(y-cy);
+  let wn=0;
+  for (const key of wallsH){ const [x,y]=key.split(',').map(Number); if (Math.min(md(x,y),md(x+1,y))<=4) wn++; }
+  for (const key of wallsV){ const [x,y]=key.split(',').map(Number); if (Math.min(md(x,y),md(x,y+1))<=4) wn++; }
+  return wn>=2 || foes.some(q=>md(q.cell.x,q.cell.y)<=4);
+}
+function aiTrapSpot(p, threat){             // 🪤 威胁下一步（最奔向王座的候选格），无威胁返回 null
+  if (!threat) return null;
+  const {dist}=bfsFromThrone(wallsH,wallsV);
+  const cands = legalMoves(threat).sort((a,b)=>dist[a.y*N+a.x]-dist[b.y*N+b.x]);
+  return cands[0] || null;
+}
+function aiFakeBoxOk(p, foes){              // 🎁 假宝箱埋脚下：有对手在 3 格内（大概率路过）才值得埋
+  return foes.some(q=>Math.abs(q.cell.x-p.cell.x)+Math.abs(q.cell.y-p.cell.y)<=3);
 }
 function aiUseItems(p){                      // 免费道具：AI 择机自动用——策略层（拦截/防御/最优目标）+ 保底释放层（35% 随性开溜保证娱乐性）
   const dists = allDists();
@@ -2172,85 +2246,38 @@ function aiUseItems(p){                      // 免费道具：AI 择机自动�
     if (p.inv.indexOf('hourglass')>=0 && myD<=7 && useHourglassItem(p)) return true;
     if (p.inv.indexOf('eclipse')>=0 && useEclipseItem(p)) return true;
   }
-  if (p.inv.indexOf('shield')>=0 && !p.shield){   // 2️⃣ 威胁防御：领跑或贴脸敌人才开盾（不白开）
-    const nearFoe = foes.some(q=>Math.abs(q.cell.x-p.cell.x)+Math.abs(q.cell.y-p.cell.y)<=2);
-    const iAmLeader = foes.every(q=>dists[q.color] >= myD);
-    if ((nearFoe || iAmLeader) && useShieldItem(p)) return true;
-  }
+  if (p.inv.indexOf('shield')>=0 && !p.shield && useShieldItem(p)) return true;   // 2️⃣ 🛡️ 有盾就开（吃到即用，不囤）
+  if (p.inv.indexOf('fakebox')>=0 && useFakeBoxItem(p)) return true;             // 🎁 有假箱就埋（每方限 1，脚下静候对手）
   if (p.inv.indexOf('doom')>=0 && useDoomItem(p, threat)) return true;   // 3️⃣ 定点标记：标全场最近敌人（领先时反标追击者）
   if (p.inv.indexOf('swapcard')>=0 && threat && dists[threat.color] < myD-1 && useSwapCardItem(p, threat)) return true;   // 🔄 换位卡：与更近王座的敌人换位才赚
   if (p.inv.indexOf('thronemove')>=0 && myD>=6){  // 👑 王座地震：落后较远时重掷王座（期望抹平位置差）
     useThroneQuakeItem(p); return true;
   }
-  if (p.inv.indexOf('megaphone')>=0){    // 4️⃣ 📢 范围内敌≥1 或墙≥2 → 震（踢飞+碎墙总有戏剧效果）
-    const cx=p.cell.x, cy=p.cell.y, md=(x,y)=>Math.abs(x-cx)+Math.abs(y-cy);
-    let wn=0, en=0;
-    for (const key of wallsH){ const [x,y]=key.split(',').map(Number); if (Math.min(md(x,y),md(x+1,y))<=4) wn++; }
-    for (const key of wallsV){ const [x,y]=key.split(',').map(Number); if (Math.min(md(x,y),md(x,y+1))<=4) wn++; }
-    for (const q of foes){ if (md(q.cell.x,q.cell.y)<=4) en++; }
-    if (wn>=2 || en>=1){ useMegaphoneItem(p); return true; }
+  if (p.inv.indexOf('megaphone')>=0 && aiMegaphoneOk(p, foes)){   // 4️⃣ 📢 范围内敌≥1 或墙≥2 → 震（踢飞+碎墙总有戏剧效果）
+    useMegaphoneItem(p); return true;
   }
-  if (p.inv.indexOf('bomb')>=0){            // 💣 四方向评分：命中敌数×10 + Σ(20−敌dist)（近王座敌人更值钱），不炸自己，取最高
-    let best=null, bs=0;
-    for (const [ddx,ddy] of [[1,0],[-1,0],[0,1],[0,-1]]){
-      let x=p.cell.x, y=p.cell.y;
-      for (let s=0;s<3;s++){
-        const nx=x+ddx, ny=y+ddy;
-        if (!inB(nx,ny) || blocked(x,y,nx,ny)) break;
-        x=nx; y=ny;
-        if (pawnAt(x,y)) break;
-      }
-      let sc=0, selfHit=false;
-      for (const q of players){
-        if (q.left || Math.abs(q.cell.x-x)>1 || Math.abs(q.cell.y-y)>1) continue;
-        if (q===p) selfHit=true; else sc += 10 + (20 - dists[q.color]);
-      }
-      if (!selfHit && sc>bs){ bs=sc; best=[ddx,ddy]; }
-    }
-    if (best && useBombItem(p, best[0], best[1])) return true;
+  if (p.inv.indexOf('bomb')>=0){            // 💣 四方向评分选最优，绝不自炸
+    const d = aiBombDir(p, dists);
+    if (d && useBombItem(p, d[0], d[1])) return true;
   }
-  if (p.inv.indexOf('shell')>=0 || p.inv.indexOf('boomerang')>=0){   // 🐢🪃 四方向模拟，选命中目标价值最高（dist 最小）的方向
-    let best=null, bt=1e9;
-    for (const [ddx,ddy] of [[1,0],[-1,0],[0,1],[0,-1]]){
-      let x=p.cell.x, y=p.cell.y, q0=null;
-      for (let s=0;s<6;s++){
-        const nx=x+ddx, ny=y+ddy;
-        if (!inB(nx,ny) || blocked(x,y,nx,ny)) break;
-        x=nx; y=ny;
-        const q=pawnAt(x,y);
-        if (q && q!==p && !q.left){ q0=q; break; }
-      }
-      if (q0 && dists[q0.color] < bt){ bt=dists[q0.color]; best=[ddx,ddy]; }
-    }
-    if (best){
-      if (p.inv.indexOf('shell')>=0) return useShellItem(p, best[0], best[1]);
-      return useBoomerangItem(p, best[0], best[1]);
-    }
+  if (p.inv.indexOf('shell')>=0){           // 🐢 四方向模拟，选命中目标价值最高的方向
+    const d = aiProjectileDir(p, dists);
+    if (d && useShellItem(p, d[0], d[1])) return true;
+  }
+  if (p.inv.indexOf('boomerang')>=0){       // 🪃 同上（回旋镖会反弹，模拟命中即放）
+    const d = aiProjectileDir(p, dists);
+    if (d && useBoomerangItem(p, d[0], d[1])) return true;
   }
   if (p.inv.indexOf('mushroom')>=0 && useMushroomItem(p)) return true;   // 5️⃣ 赶路：🍄 BFS 贪心几乎总正收益
-  if (p.inv.indexOf('skate')>=0){        // ⛸️ 四方向冲刺终点 dist 最小化
-    const sdist = bfsFromThrone(wallsH,wallsV).dist;
-    const cur = sdist[p.cell.y*N+p.cell.x];
-    let ok=false, bdn=cur;
-    for (const [ddx,ddy] of [[1,0],[-1,0],[0,1],[0,-1]]){
-      let x=p.cell.x, y=p.cell.y;
-      while (true){
-        const nx=x+ddx, ny=y+ddy;
-        if (!inB(nx,ny) || blocked(x,y,nx,ny) || isCollapsed(nx,ny) || pawnAt(nx,ny)) break;
-        x=nx; y=ny;
-      }
-      if ((x!==p.cell.x||y!==p.cell.y) && sdist[y*N+x] < bdn){ bdn=sdist[y*N+x]; ok=true; }
-    }
-    if (ok && useSkateItem(p)) return true;
-  }
-  if (p.inv.indexOf('dice')>=0 && p.inv.length < INV_CAP && useDiceItem(p)) return true;   // 6️⃣ 🎲 道具箱未满才掷（满箱 6 号面作废）
+  if (p.inv.indexOf('skate')>=0 && aiSkateOk(p) && useSkateItem(p)) return true;   // ⛸️ 有收益才滑
+  if (p.inv.indexOf('dice')>=0 && p.inv.length < INV_CAP   // 6️⃣ 🎲 墙少或垫底才赌（1/6 自眩风险要有回报预期；满箱 6 号面作废）
+    && (p.walls<=2 || foes.every(q=>dists[q.color] <= myD)) && useDiceItem(p)) return true;
   if (p.inv.indexOf('confusion')>=0 && td<=5){   // 🌀 混乱最近威胁
     if (useConfusionItem(p, threat)) return true;
   }
   if (p.inv.indexOf('trap')>=0 && td<=4){        // 🪤 埋在最近威胁下一步
-    const {dist}=bfsFromThrone(wallsH,wallsV);
-    const cands = legalMoves(threat).sort((a,b)=>dist[a.y*N+a.x]-dist[b.y*N+b.x]);
-    for(const c of cands){ if (useTrapItem(p, c.x, c.y)) return true; }
+    const c = aiTrapSpot(p, threat);
+    if (c && useTrapItem(p, c.x, c.y)) return true;
   }
   if (p.inv.indexOf('bang')>=0){            // 7️⃣ 绝地反击：💥 垫底（无人比我更远）或无路可走 → 引爆
     if ((foes.length && foes.every(q=>dists[q.color] <= myD)) || !legalMoves(p).length){
@@ -2259,33 +2286,25 @@ function aiUseItems(p){                      // 免费道具：AI 择机自动�
     }
   }
   if (rnd() < 0.35 && p.inv.length){        // 8️⃣ 🎉 保底释放：整回合没用出 → 35% 随性开溜一件（娱乐性保险丝；💥🔋除外）
-    const pool = p.inv.filter(k => k!=='bang' && k!=='restore');
+    const pool = p.inv.filter(k => k!=='bang' && k!=='restore' && k!=='dice');   // 💥🔋同前；🎲有 1/6 自眩风险不进保底
     shuffleArr(pool);
     for (const k of pool){
-      const ok = k==='blueshell'?useBlueShellItem(p)
-               : k==='hourglass'?useHourglassItem(p)
-               : k==='eclipse'?useEclipseItem(p)
-               : k==='dice'?useDiceItem(p)
-               : k==='mushroom'?useMushroomItem(p)
-               : k==='fakebox'?useFakeBoxItem(p)
-               : k==='shield'?useShieldItem(p)
-               : k==='megaphone'?useMegaphoneItem(p)
-               : k==='doom'?useDoomItem(p, threat)
-               : k==='skate'?useSkateItem(p)
-               : k==='confusion'?useConfusionItem(p, threat)
-               : k==='swapcard'?useSwapCardItem(p, threat)
-               : k==='thronemove'?useThroneQuakeItem(p)
-               : (k==='shell'||k==='boomerang'||k==='bomb') ? (()=>{   // 方向类：任选合法方向发射
-                   for (const [ddx,ddy] of [[1,0],[-1,0],[0,1],[0,-1]]){
-                     const f = k==='shell'?useShellItem(p,ddx,ddy) : k==='bomb'?useBombItem(p,ddx,ddy) : useBoomerangItem(p,ddx,ddy);
-                     if (f) return true;
-                   }
-                   return false; })()
-               : k==='trap' ? (()=>{
-                   const {dist}=bfsFromThrone(wallsH,wallsV);
-                   const cands = legalMoves(threat).sort((a,b)=>dist[a.y*N+a.x]-dist[b.y*N+b.x]);
-                   for (const c of cands){ if (useTrapItem(p, c.x, c.y)) return true; }
-                   return false; })()
+      const ok = k==='blueshell'?useBlueShellItem(p)                                    // 自动锁定领先者：安全
+               : k==='hourglass'?(myD<=7 && useHourglassItem(p))                        // 冻结他人：领先时不用
+               : k==='eclipse'?useEclipseItem(p)                                        // 遮蔽他人：安全
+               : k==='shield'?(!p.shield && foes.some(q=>Math.abs(q.cell.x-p.cell.x)+Math.abs(q.cell.y-p.cell.y)<=2) && useShieldItem(p))   // 贴脸才开盾
+               : k==='doom'?(threat && useDoomItem(p, threat))                          // 有威胁才标记
+               : k==='mushroom'?useMushroomItem(p)                                      // BFS 内部评估，被围自动失效
+               : k==='fakebox'?(aiFakeBoxOk(p, foes) && useFakeBoxItem(p))              // 有人会路过脚下才埋假箱
+               : k==='megaphone'?(aiMegaphoneOk(p, foes) && useMegaphoneItem(p))        // 范围内有敌/墙才震
+               : k==='skate'?(aiSkateOk(p) && useSkateItem(p))                          // 有收益才滑
+               : k==='confusion'?(threat && td<=5 && useConfusionItem(p, threat))       // 威胁在射程才混乱
+               : k==='swapcard'?(threat && dists[threat.color] < myD-1 && useSwapCardItem(p, threat))   // 换过去更近才换
+               : k==='thronemove'?(myD>=6 && useThroneQuakeItem(p))                     // 落后较远才重掷王座
+               : k==='bomb' ? (()=>{ const d=aiBombDir(p, dists); return d? useBombItem(p, d[0], d[1]) : false; })()   // 评分选向绝不自炸
+               : k==='shell' ? (()=>{ const d=aiProjectileDir(p, dists); return d? useShellItem(p, d[0], d[1]) : false; })()   // 有命中目标才发
+               : k==='boomerang' ? (()=>{ const d=aiProjectileDir(p, dists); return d? useBoomerangItem(p, d[0], d[1]) : false; })()
+               : k==='trap' ? (()=>{ const c = aiTrapSpot(p, threat); return c? useTrapItem(p, c.x, c.y) : false; })()   // 有威胁路径才埋
                : false;
       if (ok) return true;
     }
@@ -2296,7 +2315,7 @@ function aiAct(p, kind, arg){
   busy = true;
   setTimeout(()=>{
     busy = false;
-    if (winner) return;
+    if (winner || paused) return;   // ⏸ 暂停丢弃本次行动（未推进回合）：恢复后 aiTurn 重新决策，无损
     if (kind==='move') doMove(p, arg);
     else doWall(p, arg[0], arg[1], arg[2]);
   }, fastAI ? 18 : 130 + rnd()*150);
@@ -2389,8 +2408,10 @@ function syncAIDecide(p){
   }
   if (bestWall && rnd()>0.10){ doWall(p, bestWall[0], bestWall[1], bestWall[2]); return true; }
   const ms=legalMoves(p);
-  const step = ms.length ? bestToward(p, ms) : null;
-  if (step){ doMove(p, step); return true; }   // 🤖 无收益返回 null：本轮不消耗行动点，下个思考节拍再评（他人行动会改变局面）
+  let step = ms.length ? bestToward(p, ms) : null;
+  if (!step && ms.length && (p.waitStreak||0) >= 2) step = bestToward(p, ms, true);   // 🤖 僵局破除：连续等待 2 次后强走（同步模式防全员冻结死锁）
+  if (step){ p.waitStreak=0; doMove(p, step); return true; }
+  if (ms.length) p.waitStreak=(p.waitStreak||0)+1;   // 🤖 无收益：不耗行动点原地观察，waitStreak 破除兜底
   if (bestWall){ doWall(p, bestWall[0], bestWall[1], bestWall[2]); return true; }
   return false;
 }
@@ -2413,7 +2434,23 @@ function rollItemKind(){                   // 普通道具加权池（传说道�
 }
 function spawnBox(cap=5){                // 每 itemInterval 秒：棋盘随机刷一个宝箱；全场上限 5，超出顶掉最旧（FIFO）
   while (boxes.length >= cap) boxes.shift();
-  const c = randCell((x,y)=>!boxAt(x,y) && !trapAt(x,y) && !fakeBoxAt(x,y));
+  let c = null;
+  if (rnd() < 0.6){                      // 🔗 橡皮筋·位置倾斜：60% 刷在离王座最远的棋子旁 2 格内（落后方补给更顺手）
+    const dists = allDists();
+    const lag = players.filter(p=>!p.left).sort((a,b)=>dists[b.color]-dists[a.color])[0];
+    if (lag){
+      const ok = (x,y)=>!boxAt(x,y) && !trapAt(x,y) && !fakeBoxAt(x,y) && !pawnAt(x,y)
+               && !isCollapsed(x,y) && !(x===THRONE.x&&y===THRONE.y);
+      const cands=[];
+      for(let dx=-2;dx<=2;dx++)for(let dy=-2;dy<=2;dy++){
+        if (!dx && !dy) continue;        // 不刷在落后者脚下（白给不如留个两步小目标）
+        const nx=lag.cell.x+dx, ny=lag.cell.y+dy;
+        if (inB(nx,ny) && ok(nx,ny)) cands.push({x:nx,y:ny});
+      }
+      if (cands.length) c = cands[Math.floor(rnd()*cands.length)];
+    }
+  }
+  if (!c) c = randCell((x,y)=>!boxAt(x,y) && !trapAt(x,y) && !fakeBoxAt(x,y));
   if (!c) return;
   boxes.push({x:c.x, y:c.y, i: rollItemKind()});   // 统一宝箱：外观相同，传说道具在开箱时小概率掷出
   fx.push({type:'boxin', x:c.x, y:c.y, t0:performance.now()});
@@ -2694,7 +2731,7 @@ function bestSmash(p){
   }
   return best;
 }
-const AI_SKILL_RANK = { phase:9, sprint:8, freeze:6, shuffle:4, jump:3, steal:3, swapcolor:2 };
+const AI_SKILL_RANK = { phase:9, sprint:8, freeze:6, shuffle:4, jump:3, steal:3 };
 function aiPickSkill(offer){               // AI 选技：按强度排序取最高
   return offer.slice().sort((a,b)=>(AI_SKILL_RANK[b]||0)-(AI_SKILL_RANK[a]||0))[0];
 }
@@ -2725,11 +2762,6 @@ function aiUseSkill(p){                    // AI 用技启发式（免费即时�
     case 'steal': {                                    // 偷道具总价值最高的对手（价值相同才偏向前面的）
       const v=opps.filter(q=>q.inv.length).sort((a,b)=>invValue(b)-invValue(a)||dists[a.color]-dists[b.color])[0];
       return v? use({color:v.color}):false;
-    }
-    case 'swapcolor': {                                // 落后≥2 且目标墙≥2 才值得换色（偷墙）
-      if (dists[lead.color]+2>myD) return false;
-      const wc=Object.values(wallOwner).filter(c=>c===lead.color).length;
-      return wc>=2? use({color:lead.color}):false;
     }
     case 'freeze': { return (dists[lead.color]<=3 && myD>dists[lead.color])? use({color:lead.color}):false; }
     case 'jump': { return (myD>=6 && myD-dists[lead.color]>=3)? use(null):false; }   // 落点随机：仅落后较多时赌一把
@@ -3110,14 +3142,24 @@ window.addEventListener('resize', layout);
 
 let lastFrame = performance.now();
 let _drawErrs = 0;
+let syncTurnMark = -1, syncStallT = 0;        // ⏱️ 同步停滞看门狗：上次行动时的 turnCount / 停滞累计秒数
 function draw(now){
   try{
   const dt = Math.min(.05,(now-lastFrame)/1000); lastFrame = now;
-  if (isSyncMode() && !winner){
+  if (isSyncMode() && !winner && !paused){
     for(const p of players) p.ap = Math.min(SYNC_APMAX, p.ap + dt);   // 每秒回1点
     if (hostSim()) syncAIDriver(now);
+    if (syncTurnMark !== turnCount){ syncTurnMark = turnCount; syncStallT = 0; }   // ⏱️ 同步停滞看门狗：全员无法行动（如被墙围死）超 10 秒 → 强制环境结算一轮（天灾碎墙解围，防永久冻结）
+    else {
+      syncStallT += dt;
+      if (syncStallT > 10){
+        syncStallT = 0;
+        expireDisasters(); blizzardTick(); desertTick(); wormTick(); volcanoTick(); dragonTick(); maybeDisaster(); roundNum++;
+        logPush('⏱️ 僵局：环境加速运转', null);
+      }
+    }
   }
-  if (itemsOn && !winner && hostSim()){
+  if (itemsOn && !winner && !paused && hostSim()){
     itemClock += dt;
     if (itemClock >= itemInterval){ itemClock = 0; spawnBox(); }
   }
@@ -4774,6 +4816,11 @@ document.getElementById('btnNew').onclick = ()=>{
 document.getElementById('btnRules').onclick = ()=>showRules(false);
 document.getElementById('btnMute').onclick = function(){
   muted=!muted; this.textContent = muted? '🔇 静音':'🔊 音效';
+};
+document.getElementById('btnPause').onclick = function(){
+  paused = !paused;
+  this.textContent = paused ? '▶ 继续' : '⏸ 暂停';
+  if (!paused && !isSyncMode()) scheduleAI();   // 回合制：恢复 AI 推进（同步模式由帧循环自动继续）
 };
 document.getElementById('btnSpeed').onclick = function(){
   fastAI=!fastAI; this.textContent = fastAI? '⚡ 极速':'⚡ 正常';
